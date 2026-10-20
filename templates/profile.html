@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}My Profile · SLSU-JGE Alumni{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold text-slsu-800 mb-4">My Profile</h1>
+<div class="grid md:grid-cols-3 gap-6">
+  <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-6 text-center h-fit">
+    {% if current_user.profile_pic %}
+      <img src="{{ current_user.profile_pic }}" class="w-24 h-24 rounded-full object-cover mx-auto" alt="">
+    {% else %}
+      <div class="w-24 h-24 rounded-full bg-slsu-700 text-white flex items-center justify-center text-3xl font-bold mx-auto">{{ current_user.full_name|initials }}</div>
+    {% endif %}
+    <h3 class="mt-3 font-bold text-slate-800">{{ current_user.full_name }}</h3>
+    <p class="text-sm text-slate-500">{{ current_user.student_number }}</p>
+    <p class="text-xs text-slate-500 mt-1">{{ current_user.department or '—' }} · Batch {{ current_user.year_graduated or '—' }}</p>
+    <span class="inline-block mt-3 text-xs px-2 py-1 rounded-full bg-green-100 text-green-800 font-semibold">
+      {% if current_user.verification_status == 'verified' %}✓ Verified{% else %}Unverified{% endif %} · Approved
+    </span>
+  </div>
+
+  <form method="post" class="md:col-span-2 bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4">
+    <div>
+      <label class="text-sm font-semibold text-slate-700">Profile Picture URL (optional)</label>
+      <input name="profile_pic" value="{{ current_user.profile_pic or '' }}" placeholder="https://..." class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm">
+    </div>
+    <div>
+      <label class="text-sm font-semibold text-slate-700">Contact Number</label>
+      <input name="contact" value="{{ current_user.contact or '' }}" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm">
+    </div>
+    <div>
+      <label class="text-sm font-semibold text-slate-700">Employment / Current Work</label>
+      <input name="employment" value="{{ current_user.employment or '' }}" placeholder="e.g. Software Engineer at TechCorp" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm">
+    </div>
+    <div>
+      <label class="text-sm font-semibold text-slate-700">Location</label>
+      <input name="location" value="{{ current_user.location or '' }}" placeholder="e.g. Manila, Philippines" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm">
+    </div>
+    <div>
+      <label class="text-sm font-semibold text-slate-700">Bio</label>
+      <textarea name="bio" rows="3" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm">{{ current_user.bio or '' }}</textarea>
+    </div>
+    <button class="px-5 py-2.5 bg-slsu-700 text-white rounded-lg font-semibold hover:bg-slsu-800">Save Changes</button>
+  </form>
+</div>
+{% endblock %}

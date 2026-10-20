@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Home · SLSU-JGE Alumni{% endblock %}
+{% block content %}
+<section class="bg-gradient-to-br from-slsu-800 to-slsu-900 text-white rounded-2xl p-8 md:p-12 shadow-xl">
+  <h1 class="text-3xl md:text-4xl font-bold">SLSU-JGE Alumni Community</h1>
+  <p class="mt-3 text-blue-100 max-w-2xl">Connecting graduates of Southern Luzon State University — Judge Guillermo Eleazar Campus. Verify your record, register your account, and stay in touch with your alma mater and fellow alumni.</p>
+  <div class="mt-6 flex flex-wrap gap-3">
+    <a href="{{ url_for('directory') }}" class="px-5 py-2.5 bg-slsu-400 text-slsu-900 font-semibold rounded-lg hover:bg-slsu-300">Browse Graduate Directory</a>
+    {% if not current_user %}
+    <a href="{{ url_for('register') }}" class="px-5 py-2.5 bg-white/10 border border-white/30 rounded-lg hover:bg-white/20">Register as Alumni</a>
+    {% endif %}
+  </div>
+  <div class="mt-8 grid grid-cols-3 gap-4 max-w-lg">
+    <div class="bg-white/10 rounded-lg p-4 text-center"><div class="text-2xl font-bold">{{ stats.graduates }}</div><div class="text-xs text-blue-200">Graduates on Record</div></div>
+    <div class="bg-white/10 rounded-lg p-4 text-center"><div class="text-2xl font-bold">{{ stats.alumni }}</div><div class="text-xs text-blue-200">Registered Alumni</div></div>
+    <div class="bg-white/10 rounded-lg p-4 text-center"><div class="text-2xl font-bold">{{ stats.events }}</div><div class="text-xs text-blue-200">Homecoming Events</div></div>
+  </div>
+</section>
+
+<section class="mt-8 grid md:grid-cols-3 gap-6">
+  <div class="md:col-span-2">
+    <h2 class="text-xl font-bold text-slsu-800 mb-3">Announcements</h2>
+    {% if announcements %}
+      <div class="space-y-3">
+        {% for a in announcements %}
+          <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+            <h3 class="font-semibold text-slsu-800">{{ a.title }}</h3>
+            <p class="text-sm text-slate-600 mt-1">{{ a.content }}</p>
+            <p class="text-xs text-slate-400 mt-2">{{ a.author or 'Administration' }} · {{ a.created_at }}</p>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="text-slate-500">No announcements yet.</p>
+    {% endif %}
+  </div>
+  <div>
+    <h2 class="text-xl font-bold text-slsu-800 mb-3">Quick Links</h2>
+    <div class="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100 shadow-sm">
+      <a href="{{ url_for('directory') }}" class="block px-5 py-3 hover:bg-slate-50 font-medium">Public Graduate Directory</a>
+      <a href="{{ url_for('register') }}" class="block px-5 py-3 hover:bg-slate-50 font-medium">Alumni Registration</a>
+      <a href="{{ url_for('login') }}" class="block px-5 py-3 hover:bg-slate-50 font-medium">Alumni Login</a>
+      {% if current_user and not current_user.is_admin %}
+      <a href="{{ url_for('my_homecoming') }}" class="block px-5 py-3 hover:bg-slate-50 font-medium">My Homecoming</a>
+      {% endif %}
+    </div>
+    <div class="mt-4 bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-900">
+      <p class="font-semibold">Privacy Notice</p>
+      <p class="mt-1">The public directory shows only name, department, and graduation year. Contact details are never displayed publicly.</p>
+    </div>
+  </div>
+</section>
+{% endblock %}

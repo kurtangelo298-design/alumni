@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Homecoming Settings · Admin{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold text-slsu-800 mb-4">Homecoming Settings</h1>
+{% include "admin/_nav.html" %}
+<div class="grid md:grid-cols-2 gap-5">
+  <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+    <h3 class="font-bold text-slsu-800 mb-3">Add Event</h3>
+    <form method="post" class="space-y-2">
+      <input name="title" required placeholder="Event Title (e.g. Grand Homecoming 2026)" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm">
+      <input name="target_year" type="number" placeholder="Target Batch Year (leave blank = all batches)" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm">
+      <input name="event_date" type="date" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm">
+      <input name="venue" placeholder="Venue" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm">
+      <input name="registration_deadline" type="date" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm">
+      <textarea name="description" rows="2" placeholder="Description" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"></textarea>
+      <button class="w-full py-2 bg-slsu-700 text-white rounded-lg text-sm font-semibold hover:bg-slsu-800">Add Event</button>
+    </form>
+  </div>
+  <div class="space-y-3">
+    {% for e in events %}
+    <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-4 flex justify-between items-start gap-3">
+      <div>
+        <p class="font-semibold text-slate-800">{{ e.title }} {% if e.target_year %}<span class="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full">Batch {{ e.target_year }}</span>{% else %}<span class="text-xs bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full">All Batches</span>{% endif %}</p>
+        <p class="text-xs text-slate-500 mt-1">{{ e.event_date or 'TBA' }} · {{ e.venue or 'TBA' }} · Deadline: {{ e.registration_deadline or 'TBA' }}</p>
+        <p class="text-xs text-slate-600 mt-1">{{ e.description }}</p>
+      </div>
+      <form method="post" action="{{ url_for('admin_homecoming_delete', eid=e.id) }}" onsubmit="return confirm('Delete this event?')">
+        <button class="text-xs text-red-600 font-semibold hover:underline">Delete</button>
+      </form>
+    </div>
+    {% else %}
+    <div class="bg-white rounded-xl border border-slate-200 p-6 text-center text-slate-400 text-sm">No events yet.</div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}
