@@ -44,6 +44,21 @@ ALLOWED_MEDIA = {
     "webp": ("image/webp", "image"),
     "mp4": ("video/mp4", "video"), "webm": ("video/webm", "video"),
 }
+# [NEW v3] Allowed image types for profile picture upload
+ALLOWED_IMAGES = {"jpg", "jpeg", "png", "gif", "webp"}
+IMAGE_MIME = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp"}
+
+def _process_profile_pic(file_storage):
+    """[NEW v3] Convert uploaded image file to base64 data URI. Returns None if invalid/too large."""
+    if not file_storage or not file_storage.filename:
+        return None
+    ext = file_storage.filename.rsplit(".", 1)[-1].lower()
+    if ext not in ALLOWED_IMAGES:
+        return None
+    raw = file_storage.read()
+    if len(raw) > 5 * 1024 * 1024:  # 5MB max for profile pic
+        return None
+    return f"data:{IMAGE_MIME[ext]};base64,{base64.b64encode(raw).decode()}"
 
 DEPARTMENTS = [
     "College of Teacher Education",
@@ -438,6 +453,7 @@ def register():
         contact = request.form.get("contact", "").strip()
         password = request.form.get("password", "")
         confirm = request.form.get("confirm", "")
+        bio = request.form.get("bio", "").strip()  # [NEW v3]
         errors = []
         if not full_name or not student_number or not email or not password:
             errors.append("Full name, student number, email, and password are required.")
@@ -447,6 +463,10 @@ def register():
             errors.append("Passwords do not match.")
         if year_graduated and not year_graduated.isdigit():
             errors.append("Year graduated must be a number.")
+        # [NEW v3] validate profile picture if uploaded
+        profile_pic = _process_profile_pic(request.files.get("profile_pic"))
+        if request.files.get("profile_pic") and request.files.get("profile_pic").filename and not profile_pic:
+            errors.append("Profile picture must be JPG/PNG/GIF/WEBP, max 5MB.")
         db = get_db()
         cur = db.cursor()
         cur.execute("SELECT 1 FROM users WHERE email = %s", (email,))
@@ -468,13 +488,16 @@ def register():
             status, verification = "pending_unverified", "unverified"
             msg = "Your registration will be manually reviewed by an administrator."
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # [NEW v3] INSERT now includes profile_pic + bio
         cur.execute(
             """INSERT INTO users (full_name, student_number, department, year_graduated,
-               email, contact, password_hash, status, verification_status, is_admin, created_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,0,%s)""",
+               email, contact, password_hash, status, verification_status, is_admin,
+               bio, profile_pic, created_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,0,%s,%s,%s)""",
             (full_name, student_number, department,
              int(year_graduated) if year_graduated.isdigit() else None,
-             email, contact, generate_password_hash(password), status, verification, now),
+             email, contact, generate_password_hash(password), status, verification,
+             bio, profile_pic or "", now),
         )
         db.commit()
         flash(msg, "success")
@@ -859,11 +882,25 @@ def notifications():
 def profile():
     user = current_user(); db = get_db(); cur = db.cursor()
     if request.method == "POST":
+        bio = request.form.get("bio", "").strip()
+        employment = request.form.get("employment", "").strip()
+        location = request.form.get("location", "").strip()
+        contact = request.form.get("contact", "").strip()
+        # [NEW v3] profile picture: priority = uploaded file, else keep existing
+        uploaded_pic = _process_profile_pic(request.files.get("profile_pic_file"))
+        if uploaded_pic:
+            profile_pic = uploaded_pic
+            flash("Profile picture updated.", "success")
+        else:
+            # keep existing if no new upload; allow clearing via "remove_pic" checkbox
+            if request.form.get("remove_pic"):
+                profile_pic = ""
+            else:
+                profile_pic = user["profile_pic"] or ""
         cur.execute("UPDATE users SET bio=%s, employment=%s, location=%s, contact=%s, profile_pic=%s WHERE id=%s",
-                    (request.form.get("bio","").strip(), request.form.get("employment","").strip(),
-                     request.form.get("location","").strip(), request.form.get("contact","").strip(),
-                     request.form.get("profile_pic","").strip(), user["id"]))
-        db.commit(); flash("Profile updated.", "success")
+                    (bio, employment, location, contact, profile_pic, user["id"]))
+        db.commit()
+        flash("Profile updated.", "success")
         return redirect(url_for("profile"))
     return render_template("profile.html")
 
