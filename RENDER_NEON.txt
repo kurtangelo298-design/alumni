@@ -1,0 +1,15 @@
+SLSU Alumni System v3 (PostgreSQL / Neon) — DEPLOY TO RENDER
+============================================================
+1. Gumawa ng Neon database (neon.tech) -> kopyahin ang connection string.
+2. Sa Render Web Service -> Environment Variables:
+     DATABASE_URL   = postgresql://... (buong Neon string, may ?sslmode=require)
+     SECRET_KEY     = mahabang random string
+     PYTHON_VERSION = 3.11.0
+3. Settings:
+     Build Command : pip install -r requirements.txt
+     Start Command : gunicorn app:app
+4. I-push sa GitHub -> awtomatikong mag-deploy.
+   (Hindi na kailangan ng SQLite file — permanente na ang data sa Neon.)
+5. Mga table ay awtomatikong ginagawa sa unang run (init_db).
+   Demo accounts: admin@slsu.edu.ph / admin123  at  alumni@slsu.edu.ph / alumni123
+   — PALITAN AGAD ang passwords pag live na.

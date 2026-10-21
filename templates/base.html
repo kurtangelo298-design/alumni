@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}SLSU-JGE Alumni Management System{% endblock %}</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+/* [CHANGED] University GREEN theme — primary #1b5e20, hover #2e7d32, accent #66bb6a.
+   All existing `slsu-*` classes now resolve to green tones automatically. */
+tailwind.config = { theme: { extend: { colors: { slsu: {
+  50:'#f1f8e9', 100:'#dcedc8', 200:'#c5e1a5', 300:'#a5d6a7',
+  400:'#66bb6a', 500:'#43a047', 600:'#2e7d32', 700:'#1b5e20',
+  800:'#145219', 900:'#0b3d11'
+} } } } }
+</script>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen flex flex-col">
+<header class="bg-slsu-700 text-white shadow-lg sticky top-0 z-40">
+  <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between flex-wrap gap-2">
+    <!-- [CHANGED] Real SLSU-JGE logo (placeholder path — replace file later) + campus name -->
+    <a href="{{ url_for('index') }}" class="flex items-center gap-2 font-bold text-lg">
+      <img src="{{ url_for('static', filename='images/slsu-logo.png') }}"
+           alt="SLSU-JGE Logo"
+           class="w-10 h-10 rounded-full object-cover bg-white flex-shrink-0"
+           onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'w-10 h-10 rounded-full bg-white text-slsu-700 flex items-center justify-center font-black',textContent:'S'}))">
+      <span class="leading-tight">SLSU — Judge Guillermo Eleazar Campus
+        <span class="block text-xs font-normal text-green-200">Alumni Management System</span>
+      </span>
+    </a>
+    <nav class="flex items-center gap-1 text-sm flex-wrap">
+      <a href="{{ url_for('index') }}" class="px-3 py-1.5 rounded hover:bg-slsu-600">Home</a>
+      <a href="{{ url_for('directory') }}" class="px-3 py-1.5 rounded hover:bg-slsu-600">Graduate Directory</a>
+      {% if current_user %}
+        {% if current_user.is_admin %}
+          <a href="{{ url_for('admin_dashboard') }}" class="px-3 py-1.5 rounded bg-slsu-400 text-slsu-900 font-semibold hover:bg-slsu-300">Admin Panel</a>
+        {% else %}
+          <a href="{{ url_for('feed') }}" class="px-3 py-1.5 rounded hover:bg-slsu-600">Feed</a>
+          <a href="{{ url_for('alumni_directory') }}" class="px-3 py-1.5 rounded hover:bg-slsu-600 hidden sm:inline">Alumni</a>
+          <a href="{{ url_for('my_homecoming') }}" class="px-3 py-1.5 rounded hover:bg-slsu-600 hidden sm:inline">Homecoming</a>
+          <a href="{{ url_for('messages') }}" class="px-3 py-1.5 rounded hover:bg-slsu-600">Messages</a>
+          <a href="{{ url_for('notifications') }}" class="px-3 py-1.5 rounded hover:bg-slsu-600 relative">
+            Notifications
+            {% if unread_count %}<span class="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">{{ unread_count }}</span>{% endif %}
+          </a>
+        {% endif %}
+        <a href="{{ url_for('profile') }}" class="px-3 py-1.5 rounded hover:bg-slsu-600">Profile</a>
+        <a href="{{ url_for('logout') }}" class="px-3 py-1.5 rounded bg-white/10 hover:bg-white/20">Logout</a>
+      {% else %}
+        <a href="{{ url_for('register') }}" class="px-3 py-1.5 rounded bg-slsu-400 text-slsu-900 font-semibold hover:bg-slsu-300">Register</a>
+        <a href="{{ url_for('login') }}" class="px-3 py-1.5 rounded bg-white/10 hover:bg-white/20">Login</a>
+      {% endif %}
+    </nav>
+  </div>
+</header>
+
+<main class="flex-1 max-w-7xl w-full mx-auto px-4 py-6">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="space-y-2 mb-4">
+        {% for cat, msg in messages %}
+          <div class="px-4 py-3 rounded-lg border text-sm
+            {% if cat == 'success' %}bg-green-50 border-green-300 text-green-800
+            {% elif cat == 'error' %}bg-red-50 border-red-300 text-red-800
+            {% elif cat == 'warning' %}bg-green-50 border-green-300 text-green-800
+            {% else %}bg-blue-50 border-blue-300 text-blue-800{% endif %}">{{ msg }}</div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="bg-slsu-800 text-green-100 text-sm py-6 mt-8">
+  <div class="max-w-7xl mx-auto px-4 text-center">
+    <p class="font-semibold text-white">Southern Luzon State University — Judge Guillermo Eleazar Campus</p>
+    <p class="mt-1">Alumni Management System · Tagkawayan, Quezon · © {{ now_year }}</p>
+  </div>
+</footer>
+</body>
+</html>

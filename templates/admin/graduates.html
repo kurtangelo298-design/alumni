@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Graduate Master List · Admin{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold text-slsu-700">Graduate Master List</h1>
+<p class="text-sm text-slate-500 mt-1">{{ total }} record(s) · organized by course and year.</p>
+
+<div class="grid lg:grid-cols-3 gap-4 mt-4">
+  <!-- Add single -->
+  <form method="post" class="bg-white rounded-xl border border-slate-200 p-4 shadow-sm space-y-2">
+    <h3 class="font-bold text-slsu-700 text-sm">+ Add One Graduate</h3>
+    <input type="hidden" name="action" value="add">
+    <input name="full_name" required placeholder="Full name" class="w-full border border-slate-300 rounded px-2 py-1.5 text-sm">
+    <input name="student_number" required placeholder="Student number" class="w-full border border-slate-300 rounded px-2 py-1.5 text-sm">
+    <select name="department" class="w-full border border-slate-300 rounded px-2 py-1.5 text-sm">
+      {% for d in depts %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+    </select>
+    <input name="year_graduated" type="number" placeholder="Year graduated" class="w-full border border-slate-300 rounded px-2 py-1.5 text-sm">
+    <button class="w-full py-1.5 bg-slsu-700 text-white rounded text-sm font-semibold hover:bg-slsu-600">Add</button>
+  </form>
+
+  <!-- [v4] Bulk list add: pick course + year, paste list -->
+  <form method="post" class="bg-white rounded-xl border border-slate-200 p-4 shadow-sm space-y-2 lg:col-span-2">
+    <h3 class="font-bold text-slsu-700 text-sm">📋 Bulk Add — Pick Course + Year, Paste List</h3>
+    <input type="hidden" name="action" value="bulk_list">
+    <div class="grid grid-cols-2 gap-2">
+      <select name="course" required class="border border-slate-300 rounded px-2 py-1.5 text-sm">
+        <option value="">Select course…</option>
+        {% for d in depts %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+      </select>
+      <input name="year" type="number" required placeholder="Graduation year" class="border border-slate-300 rounded px-2 py-1.5 text-sm">
+    </div>
+    <textarea name="names" rows="4" required placeholder="One student per line. Format: Full Name, Student Number (student no. optional — auto-generated if blank)&#10;e.g.&#10;Juan Dela Cruz, 2024-0001&#10;Maria Santos&#10;Jose Reyes" class="w-full border border-slate-300 rounded px-2 py-1.5 text-sm font-mono"></textarea>
+    <button class="w-full py-1.5 bg-slsu-600 text-white rounded text-sm font-semibold hover:bg-slsu-500">Record All Students</button>
+  </form>
+</div>
+
+<!-- CSV upload + search -->
+<div class="mt-4 flex flex-wrap gap-3 items-center">
+  <form method="post" action="{{ url_for('admin_graduates_upload') }}" enctype="multipart/form-data" class="flex gap-2 items-center">
+    <input name="file" type="file" accept=".csv" required class="text-sm">
+    <button class="px-3 py-1.5 border border-slsu-700 text-slsu-700 rounded text-sm font-semibold hover:bg-slsu-50">Upload CSV</button>
+  </form>
+  <form method="get" class="flex gap-2">
+    <input name="q" value="{{ q }}" placeholder="Search name / student no." class="border border-slate-300 rounded px-3 py-1.5 text-sm">
+    <button class="px-3 py-1.5 bg-slsu-700 text-white rounded text-sm font-semibold">Search</button>
+  </form>
+</div>
+
+<!-- Grouped list -->
+<div class="mt-6 space-y-6">
+  {% for course, course_total, year_groups in grouped %}
+  <section class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+    <div class="bg-slsu-700 text-white px-5 py-3 font-bold">{{ course }} <span class="text-xs font-normal bg-white/20 rounded-full px-2 py-0.5 ml-2">{{ course_total }}</span></div>
+    {% for year, rows in year_groups %}
+    <div class="px-5 py-3 border-b border-slate-100">
+      <h3 class="text-sm font-bold text-slsu-600 mb-2">Batch {{ year }} ({{ rows|length }})</h3>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead><tr class="text-left text-xs text-slate-400 border-b border-slate-100">
+            <th class="py-1 pr-4">Student No.</th><th class="py-1 pr-4">Full Name</th><th class="py-1">Actions</th>
+          </tr></thead>
+          <tbody class="divide-y divide-slate-50">
+            {% for g in rows %}
+            <tr>
+              <td class="py-2 pr-4 font-mono text-xs">{{ g.student_number }}</td>
+              <td class="py-2 pr-4">{{ g.full_name }}</td>
+              <td class="py-2">
+                <details class="inline">
+                  <summary class="cursor-pointer text-xs text-slsu-700 font-semibold hover:underline">Edit</summary>
+                  <form method="post" action="{{ url_for('admin_graduate_edit', gid=g.id) }}" class="mt-2 flex flex-wrap gap-1 items-center bg-slate-50 p-2 rounded">
+                    <input name="full_name" value="{{ g.full_name }}" class="border border-slate-300 rounded px-2 py-1 text-xs">
+                    <input name="student_number" value="{{ g.student_number }}" class="border border-slate-300 rounded px-2 py-1 text-xs w-28">
+                    <select name="department" class="border border-slate-300 rounded px-2 py-1 text-xs">
+                      {% for d in depts %}<option value="{{ d }}" {% if g.department==d %}selected{% endif %}>{{ d }}</option>{% endfor %}
+                    </select>
+                    <input name="year_graduated" type="number" value="{{ g.year_graduated }}" class="border border-slate-300 rounded px-2 py-1 text-xs w-20">
+                    <button class="px-2 py-1 bg-slsu-700 text-white rounded text-xs">Save</button>
+                  </form>
+                </details>
+                <form method="post" action="{{ url_for('admin_graduate_delete', gid=g.id) }}" class="inline" onsubmit="return confirm('Delete this record?')">
+                  <button class="text-xs text-red-600 hover:underline ml-2">Delete</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endfor %}
+  </section>
+  {% else %}
+  <div class="bg-white rounded-xl border border-slate-200 p-10 text-center text-slate-400">No records.</div>
+  {% endfor %}
+</div>
+{% endblock %}

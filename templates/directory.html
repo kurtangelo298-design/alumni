@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Graduate Directory · SLSU-JGE{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold text-slsu-700">Graduate Directory</h1>
+<p class="text-sm text-slate-500 mt-1">Organized by course, then by graduation year. {{ total }} record(s) found.</p>
+
+<form method="get" class="mt-4 bg-white rounded-xl border border-slate-200 p-4 shadow-sm grid md:grid-cols-5 gap-3">
+  <input name="q" value="{{ q }}" placeholder="Search name / student no." class="border border-slate-300 rounded-lg px-3 py-2 text-sm">
+  <select name="department" class="border border-slate-300 rounded-lg px-3 py-2 text-sm">
+    <option value="">All courses</option>
+    {% for d in depts %}<option value="{{ d }}" {% if dept==d %}selected{% endif %}>{{ d }}</option>{% endfor %}
+  </select>
+  <input name="year_from" value="{{ year_from }}" placeholder="Year from" class="border border-slate-300 rounded-lg px-3 py-2 text-sm">
+  <input name="year_to" value="{{ year_to }}" placeholder="Year to" class="border border-slate-300 rounded-lg px-3 py-2 text-sm">
+  <button class="bg-slsu-700 text-white rounded-lg font-semibold text-sm hover:bg-slsu-600">Search</button>
+</form>
+
+<div class="mt-6 space-y-6">
+  {% for course, course_total, year_groups in grouped %}
+  <section class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+    <div class="bg-slsu-700 text-white px-5 py-3 flex items-center justify-between">
+      <h2 class="font-bold">{{ course }}</h2>
+      <span class="text-xs bg-white/20 rounded-full px-2 py-0.5">{{ course_total }} graduate(s)</span>
+    </div>
+    <div class="divide-y divide-slate-100">
+      {% for year, rows in year_groups %}
+      <div class="px-5 py-3">
+        <h3 class="text-sm font-bold text-slsu-600 mb-2">Batch {{ year }} <span class="font-normal text-slate-400">({{ rows|length }})</span></h3>
+        <div class="grid sm:grid-cols-2 md:grid-cols-3 gap-2">
+          {% for g in rows %}
+          <div class="flex items-center gap-2 text-sm bg-slate-50 rounded-lg px-3 py-2">
+            <span class="w-7 h-7 rounded-full bg-slsu-100 text-slsu-700 flex items-center justify-center text-[10px] font-bold">{{ g.full_name|initials }}</span>
+            <div class="min-w-0">
+              <p class="font-medium text-slate-800 truncate">{{ g.full_name }}</p>
+              <p class="text-[11px] text-slate-400">{{ g.student_number }}</p>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% else %}
+  <div class="bg-white rounded-xl border border-slate-200 p-10 text-center text-slate-400">No graduates match your search.</div>
+  {% endfor %}
+</div>
+{% endblock %}

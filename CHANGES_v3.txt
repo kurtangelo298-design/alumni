@@ -1,0 +1,13 @@
+v3 CHANGES (PostgreSQL / Neon version)
+======================================
+- app.py: naayos na Postgres version (RETURNING id, %s placeholders, rollback-on-teardown)
+- BAGO: group avatar (column `avatar` sa chat_groups + /messages/group/<id>/avatar route)
+- BAGO: profile picture upload sa register at profile page (base64 data URI, max 5MB)
+- BAGO: bio field sa registration; editable anytime sa profile
+- AYOS: feed.html 7-tuple match (post, comments, replies, reply_count, media, reactions, my_reaction)
+- AYOS: inalis ang demo/admin credentials sa login form
+- AYOS: 1-on-1 private chat (send/reply/mark-read/auto-scroll) + group chat (unlimited members,
+        add/remove, rename, avatar, group conversation, notifications)
+- LAHAT ng lumang features preserved: public directory, auto-verification, admin panel,
+  announcements, homecoming, notifications, photo/video posts, 6 FB-style reactions, comments.
+- Green theme + SLSU logo placeholder (static/images/slsu-logo.png — palitan ang file)

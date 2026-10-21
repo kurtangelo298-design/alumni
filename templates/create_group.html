@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}New Group Chat · SLSU-JGE Alumni{% endblock %}
+{% block content %}
+<div class="max-w-2xl mx-auto">
+  <div class="bg-white rounded-2xl border border-slate-200 shadow-lg p-8">
+    <h1 class="text-2xl font-bold text-slsu-700 text-center">Create Group Chat</h1>
+    <p class="text-sm text-slate-500 text-center mt-1">Pick a name, add a group photo (optional), and select members — no limit. You will be the group admin.</p>
+    <!-- [v3] enctype multipart + group avatar -->
+    <form method="post" enctype="multipart/form-data" class="mt-6 space-y-4">
+      <div>
+        <label class="text-sm font-semibold text-slate-700">Group Name *</label>
+        <input name="name" required placeholder="e.g. Batch 2018 Computer Studies" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-slsu-600 outline-none">
+      </div>
+      <div>
+        <label class="text-sm font-semibold text-slate-700">Group Avatar (optional, JPG/PNG max 5MB)</label>
+        <input name="avatar" type="file" accept="image/*" class="mt-1 w-full text-sm border border-slate-300 rounded-lg px-3 py-2">
+      </div>
+      <div>
+        <label class="text-sm font-semibold text-slate-700">Select Members</label>
+        <div class="mt-1 border border-slate-300 rounded-lg max-h-72 overflow-y-auto divide-y divide-slate-100">
+          {% for a in alumni %}
+          <label class="flex items-center gap-3 px-3 py-2 hover:bg-slate-50 cursor-pointer text-sm">
+            <input type="checkbox" name="members" value="{{ a.id }}" class="w-4 h-4 accent-slsu-700">
+            <span class="font-medium text-slate-800">{{ a.full_name }}</span>
+            <span class="text-xs text-slate-400 ml-auto">{{ a.department or '' }} · {{ a.year_graduated or '' }}</span>
+          </label>
+          {% else %}<p class="p-4 text-sm text-slate-400">No other approved alumni available yet.</p>{% endfor %}
+        </div>
+      </div>
+      <div class="flex gap-2">
+        <a href="{{ url_for('messages') }}" class="flex-1 text-center py-2.5 border border-slate-300 rounded-lg font-semibold hover:bg-slate-50">Cancel</a>
+        <button class="flex-1 py-2.5 bg-slsu-700 text-white rounded-lg font-semibold hover:bg-slsu-600">Create Group</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
