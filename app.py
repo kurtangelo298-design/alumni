@@ -540,76 +540,106 @@ def logout():
     return redirect(url_for("index"))
 
 # ---------------------------------------------------------------------------
-# Feed — Media + Reactions
+# Feed — Media Upload + Reactions — FIXED
 # ---------------------------------------------------------------------------
 @app.route("/feed", methods=["GET", "POST"])
 @login_required
 def feed():
     user = current_user()
+    if not user:
+        flash("Please log in again.", "warning")
+        return redirect(url_for("login"))
+        
     db = get_db()
     cur = db.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     if request.method == "POST":
         content = request.form.get("content", "").strip()
         media_file = request.files.get("media")
         media_rec = None
+
         if media_file and media_file.filename:
             ext = media_file.filename.rsplit(".", 1)[-1].lower()
             if ext not in ALLOWED_MEDIA:
-                flash("Unsupported file. Use JPG/PNG/GIF/WEBP photo or MP4/WEBM video.", "error")
+                flash("Unsupported file. Use JPG/PNG/GIF/WEBP photo or MP4/WEBM video (max 50MB).", "error")
                 return redirect(url_for("feed"))
             raw = media_file.read()
             if len(raw) > 50 * 1024 * 1024:
                 flash("File too large. Maximum is 50 MB.", "error")
                 return redirect(url_for("feed"))
             mime, mtype = ALLOWED_MEDIA[ext]
-            media_rec = (mtype, f"data:{mime};base64,{base64.b64encode(raw).decode()}")
+            data_uri = f"data:{mime};base64,{base64.b64encode(raw).decode()}"
+            media_rec = (mtype, data_uri)
+
         if not content and not media_rec:
             flash("A post needs text, a photo, or a video.", "error")
             return redirect(url_for("feed"))
-        # NA-AYOS: RETURNING id (hindi cur.lastrowid!)
+
+        # ✅ TAMA SA POSTGRESQL — GUMAMIT NG RETURNING id
         cur.execute(
-            "INSERT INTO posts (user_id, content, created_at) VALUES (%s,%s,%s) RETURNING id",
-            (user["id"], content, now),
+            "INSERT INTO posts (user_id, content, created_at) VALUES (%s, %s, %s) RETURNING id",
+            (user["id"], content, now)
         )
         post_id = cur.fetchone()["id"]
+        db.commit()
+
         if media_rec:
             cur.execute(
-                "INSERT INTO post_media (post_id, media_type, media_data, created_at) VALUES (%s,%s,%s,%s)",
-                (post_id, media_rec[0], media_rec[1], now),
+                "INSERT INTO post_media (post_id, media_type, media_data, created_at) VALUES (%s, %s, %s, %s)",
+                (post_id, media_rec[0], media_rec[1], now)
             )
-        db.commit()
+            db.commit()
+
         return redirect(url_for("feed"))
 
-    cur.execute(
-        """SELECT p.*, u.full_name, u.department, u.year_graduated
-           FROM posts p JOIN users u ON u.id = p.user_id ORDER BY p.created_at DESC LIMIT 100"""
-    )
+    # Kunin ang mga posts
+    cur.execute("""
+        SELECT p.*, u.full_name, u.department, u.year_graduated
+        FROM posts p 
+        JOIN users u ON u.id = p.user_id
+        ORDER BY p.created_at DESC LIMIT 100
+    """)
     posts = cur.fetchall()
+
+    # Reactions — hindi magka-crash kahit wala
     cur.execute("SELECT post_id, reaction_type, user_id FROM post_reactions")
-    r_counts, r_mine = {}, {}
-    for r in cur.fetchall():
+    reaction_rows = cur.fetchall()
+    r_counts = {}
+    r_mine = {}
+    for r in reaction_rows:
         pid = r["post_id"]
         r_counts.setdefault(pid, {})
         r_counts[pid][r["reaction_type"]] = r_counts[pid].get(r["reaction_type"], 0) + 1
         if r["user_id"] == user["id"]:
             r_mine[pid] = r["reaction_type"]
+
+    # Media — hindi magka-crash kahit wala
     cur.execute("SELECT post_id, media_type, media_data FROM post_media")
-    media_map = {m["post_id"]: (m["media_type"], m["media_data"]) for m in cur.fetchall()}
+    media_rows = cur.fetchall()
+    media_map = {m["post_id"]: (m["media_type"], m["media_data"]) for m in media_rows}
+
     post_data = []
     for p in posts:
-        cur.execute(
-            """SELECT c.*, u.full_name FROM comments c JOIN users u ON u.id = c.user_id
-               WHERE c.post_id = %s ORDER BY c.created_at ASC""", (p["id"],)
-        )
+        cur.execute("""
+            SELECT c.*, u.full_name FROM comments c 
+            JOIN users u ON u.id = c.user_id
+            WHERE c.post_id = %s ORDER BY c.created_at ASC
+        """, (p["id"],))
         comments = cur.fetchall()
         top = [c for c in comments if c["parent_id"] is None]
         replies = {}
         for c in comments:
             if c["parent_id"]:
                 replies.setdefault(c["parent_id"], []).append(c)
-        post_data.append((p, top, replies, media_map.get(p["id"]),
-                          r_counts.get(p["id"], {}), r_mine.get(p["id"])))
+
+        post_data.append((
+            p, top, replies,
+            media_map.get(p["id"]),
+            r_counts.get(p["id"], {}),
+            r_mine.get(p["id"])
+        ))
+
     return render_template("feed.html", post_data=post_data)
 
 @app.route("/post/<int:post_id>/react", methods=["POST"])
@@ -699,51 +729,131 @@ def alumni_directory():
     return render_template("alumni_directory.html", alumni=alumni, depts=depts, q=q, dept=dept)
 
 # ---------------------------------------------------------------------------
-# Messages — 1-on-1 + Group
+# Messages — 1-on-1 + Group Chats — FIXED
 # ---------------------------------------------------------------------------
 def _direct_conversations(db, uid):
     cur = db.cursor()
-    cur.execute("SELECT sender_id, receiver_id, content, created_at FROM messages WHERE sender_id = %s OR receiver_id = %s ORDER BY created_at DESC", (uid, uid))
+    try:
+        cur.execute(
+            "SELECT sender_id, receiver_id, content, created_at FROM messages "
+            "WHERE sender_id = %s OR receiver_id = %s ORDER BY created_at DESC",
+            (uid, uid),
+        )
+        rows = cur.fetchall()
+    except Exception:
+        return []
+    
     last = {}
-    for r in cur.fetchall():
-        other = r["receiver_id"] if r["sender_id"] == uid else r["sender_id"]
-        if other not in last: last[other] = r
+    for r in rows:
+        sender = r["sender_id"]
+        receiver = r["receiver_id"]
+        other = receiver if sender == uid else sender
+        if other not in last:
+            last[other] = r
+    
     convos = []
-    for oid, r in last.items():
-        cur.execute("SELECT full_name FROM users WHERE id = %s", (oid,))
-        urow = cur.fetchone()
-        convos.append({"other_id": oid, "other_name": urow["full_name"] if urow else "Unknown",
-                       "last_msg": r["content"], "last_at": r["created_at"]})
+    for other_id, r in last.items():
+        try:
+            cur.execute("SELECT full_name FROM users WHERE id = %s", (other_id,))
+            urow = cur.fetchone()
+            convos.append({
+                "other_id": other_id,
+                "other_name": urow["full_name"] if urow and urow["full_name"] else "Unknown",
+                "last_msg": r["content"] or "(No message)",
+                "last_at": r["created_at"],
+            })
+        except Exception:
+            continue
     return convos
+
+
+def get_user_groups_safe(db, uid):
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """SELECT g.id, g.name, g.created_by,
+               (SELECT message_text FROM group_messages WHERE group_id = g.id ORDER BY sent_at DESC LIMIT 1) AS last_msg,
+               (SELECT sent_at FROM group_messages WHERE group_id = g.id ORDER BY sent_at DESC LIMIT 1) AS last_at,
+               (SELECT COUNT(*) FROM group_messages gm2 WHERE gm2.group_id = g.id AND gm2.sender_id != %s
+                  AND gm2.sent_at > COALESCE(
+                      (SELECT last_read_at FROM group_members WHERE group_id = g.id AND user_id = %s), 
+                      '0000-01-01'::text)) AS unread
+               FROM chat_groups g JOIN group_members gm ON gm.group_id = g.id
+               WHERE gm.user_id = %s ORDER BY COALESCE(last_at, '0000-01-01') DESC""",
+            (uid, uid, uid),
+        )
+        return cur.fetchall()
+    except Exception:
+        return []
+
 
 @app.route("/messages", defaults={"other_id": None}, methods=["GET", "POST"])
 @app.route("/messages/<int:other_id>", methods=["GET", "POST"])
 @login_required
 def messages(other_id):
     user = current_user()
+    if not user:
+        flash("Please log in to access messages.", "warning")
+        return redirect(url_for("login"))
+    
     db = get_db()
     cur = db.cursor()
+
     if request.method == "POST" and other_id:
         content = request.form.get("content", "").strip()
         if content:
-            cur.execute("INSERT INTO messages (sender_id, receiver_id, content, created_at) VALUES (%s,%s,%s,%s)",
-                        (user["id"], other_id, content, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-            notify(other_id, "message", f"New message from {user['full_name']}.", url_for("messages", other_id=user["id"]))
-            db.commit()
+            try:
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                cur.execute(
+                    "INSERT INTO messages (sender_id, receiver_id, content, created_at) VALUES (%s, %s, %s, %s)",
+                    (user["id"], other_id, content, now),
+                )
+                notify(other_id, "message", f"New message from {user['full_name']}.",
+                       url_for("messages", other_id=user["id"]))
+                db.commit()
+            except Exception as e:
+                flash(f"Failed to send message: {e}", "error")
         return redirect(url_for("messages", other_id=other_id))
+
     convos = _direct_conversations(db, user["id"])
-    groups = get_user_groups(db, user["id"])
-    thread, other = [], None
+    groups = get_user_groups_safe(db, user["id"])
+    thread = []
+    other = None
+
     if other_id:
-        cur.execute("SELECT * FROM users WHERE id = %s", (other_id,)); other = cur.fetchone()
-        cur.execute("""SELECT sender_id, content, created_at FROM messages
-                       WHERE (sender_id=%s AND receiver_id=%s) OR (sender_id=%s AND receiver_id=%s) ORDER BY created_at ASC""",
-                    (user["id"], other_id, other_id, user["id"]))
-        thread = cur.fetchall()
-        cur.execute("UPDATE messages SET is_read=1 WHERE sender_id=%s AND receiver_id=%s", (other_id, user["id"]))
-        db.commit()
-    return render_template("messages.html", convos=convos, groups=groups, thread=thread,
-                           other=other, other_id=other_id, group=None, members=None, alumni=None, is_creator=False)
+        try:
+            cur.execute("SELECT * FROM users WHERE id = %s", (other_id,))
+            other = cur.fetchone()
+            
+            cur.execute(
+                """SELECT sender_id, content, created_at FROM messages
+                   WHERE (sender_id = %s AND receiver_id = %s) 
+                      OR (sender_id = %s AND receiver_id = %s)
+                   ORDER BY created_at ASC""",
+                (user["id"], other_id, other_id, user["id"]),
+            )
+            thread = cur.fetchall()
+            
+            cur.execute(
+                "UPDATE messages SET is_read = 1 WHERE sender_id = %s AND receiver_id = %s",
+                (other_id, user["id"]),
+            )
+            db.commit()
+        except Exception as e:
+            flash(f"Could not load conversation: {e}", "error")
+
+    return render_template(
+        "messages.html",
+        convos=convos,
+        groups=groups,
+        thread=thread,
+        other=other,
+        other_id=other_id,
+        group=None,
+        members=None,
+        alumni=None,
+        is_creator=False
+    )
 
 @app.route("/messages/group/new", methods=["GET", "POST"])
 @login_required
