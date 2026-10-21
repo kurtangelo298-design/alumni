@@ -26,7 +26,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 # ---------------------------------------------------------------------------
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://neondb_owner:npg_X5ayN0AfBQTt@ep-wild-voice-b36qebp6-pooler.c-4.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+    "postgresql://username:password@hostname:5432/dbname?sslmode=require"
 )
 
 app = Flask(__name__)
@@ -95,6 +95,12 @@ def get_db():
 def close_db(exc):
     db = g.pop("db", None)
     if db is not None:
+        try:
+            # ✅ CRITICAL FIX: i-rollback PALAGI bago mag-close para hindi ma-stuck sa
+            # "InFailedSqlTransaction" kapag may naunang failed query.
+            db.rollback()
+        except Exception:
+            pass
         db.close()
 
 # ---------------------------------------------------------------------------
@@ -236,8 +242,15 @@ def init_db():
         for stmt in SCHEMA.split(";"):
             stmt = stmt.strip()
             if stmt:
-                cur.execute(stmt)
-        conn.commit()
+                try:
+                    cur.execute(stmt)
+                    conn.commit()
+                except Exception as e:
+                    print(f"[init_db] skip statement (may exist na): {e}")
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         cur.execute("SELECT COUNT(*) FROM users WHERE is_admin = 1")
@@ -314,8 +327,17 @@ def current_user():
         return None
     db = get_db()
     cur = db.cursor()
-    cur.execute("SELECT * FROM users WHERE id = %s", (uid,))
-    return cur.fetchone()
+    try:
+        cur.execute("SELECT * FROM users WHERE id = %s", (uid,))
+        return cur.fetchone()
+    except Exception:
+        # ✅ CRITICAL FIX: kapag aborted ang transaction, i-rollback tapos subukan ulit
+        try:
+            db.rollback()
+            cur.execute("SELECT * FROM users WHERE id = %s", (uid,))
+            return cur.fetchone()
+        except Exception:
+            return None
 
 def login_required(f):
     @wraps(f)
@@ -354,9 +376,16 @@ def unread_count():
         return 0
     db = get_db()
     cur = db.cursor()
-    cur.execute("SELECT COUNT(*) AS c FROM notifications WHERE user_id = %s AND is_read = 0", (user["id"],))
-    row = cur.fetchone()
-    return row["c"] if row else 0
+    try:
+        cur.execute("SELECT COUNT(*) AS c FROM notifications WHERE user_id = %s AND is_read = 0", (user["id"],))
+        row = cur.fetchone()
+        return row["c"] if row else 0
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return 0
 
 def distinct_departments():
     db = get_db()
@@ -372,17 +401,21 @@ def distinct_departments():
 
 def get_user_groups(db, uid):
     cur = db.cursor()
-    cur.execute(
-        """SELECT g.id, g.name, g.created_by,
-           (SELECT message_text FROM group_messages WHERE group_id = g.id ORDER BY sent_at DESC LIMIT 1) AS last_msg,
-           (SELECT sent_at FROM group_messages WHERE group_id = g.id ORDER BY sent_at DESC LIMIT 1) AS last_at,
-           (SELECT COUNT(*) FROM group_messages gm2 WHERE gm2.group_id = g.id AND gm2.sender_id != %s
-              AND gm2.sent_at > COALESCE((SELECT last_read_at FROM group_members WHERE group_id = g.id AND user_id = %s), '0000-01-01')) AS unread
-           FROM chat_groups g JOIN group_members gm ON gm.group_id = g.id
-           WHERE gm.user_id = %s ORDER BY COALESCE(last_at, '0000-01-01') DESC""",
-        (uid, uid, uid),
-    )
-    return cur.fetchall()
+    try:
+        cur.execute(
+            """SELECT g.id, g.name, g.created_by,
+               (SELECT message_text FROM group_messages WHERE group_id = g.id ORDER BY sent_at DESC LIMIT 1) AS last_msg,
+               (SELECT sent_at FROM group_messages WHERE group_id = g.id ORDER BY sent_at DESC LIMIT 1) AS last_at,
+               (SELECT COUNT(*) FROM group_messages gm2 WHERE gm2.group_id = g.id AND gm2.sender_id != %s
+                  AND gm2.sent_at > COALESCE((SELECT last_read_at FROM group_members WHERE group_id = g.id AND user_id = %s), '0000-01-01')) AS unread
+               FROM chat_groups g JOIN group_members gm ON gm.group_id = g.id
+               WHERE gm.user_id = %s ORDER BY COALESCE(last_at, '0000-01-01') DESC""",
+            (uid, uid, uid),
+        )
+        return cur.fetchall()
+    except Exception:
+        db.rollback()  # ✅ CRITICAL FIX
+        return []
 
 @app.template_filter("initials")
 def initials(name):
@@ -593,48 +626,62 @@ def feed():
 
         return redirect(url_for("feed"))
 
-    # Kunin ang mga posts
-    cur.execute("""
-        SELECT p.*, u.full_name, u.department, u.year_graduated, u.profile_pic
-        FROM posts p 
-        JOIN users u ON u.id = p.user_id
-        ORDER BY p.created_at DESC LIMIT 100
-    """)
-    posts = cur.fetchall()
+    # Kunin ang mga posts (DEFENSIVE — try/except para hindi mag-500 kahit may missing table)
+    try:
+        cur.execute("""
+            SELECT p.*, u.full_name, u.department, u.year_graduated, u.profile_pic
+            FROM posts p
+            JOIN users u ON u.id = p.user_id
+            ORDER BY p.created_at DESC LIMIT 100
+        """)
+        posts = cur.fetchall()
+    except Exception as e:
+        print(f"[feed] posts query failed: {e}")
+        posts = []
 
-    # Reactions — hindi magka-crash kahit wala
-    cur.execute("SELECT post_id, reaction_type, user_id FROM post_reactions")
-    reaction_rows = cur.fetchall()
-    r_counts = {}
-    r_mine = {}
-    for r in reaction_rows:
-        pid = r["post_id"]
-        r_counts.setdefault(pid, {})
-        r_counts[pid][r["reaction_type"]] = r_counts[pid].get(r["reaction_type"], 0) + 1
-        if r["user_id"] == user["id"]:
-            r_mine[pid] = r["reaction_type"]
+    # Reactions — safe kahit wala pang post_reactions table
+    r_counts, r_mine = {}, {}
+    try:
+        cur.execute("SELECT post_id, reaction_type, user_id FROM post_reactions")
+        for r in cur.fetchall():
+            pid = r["post_id"]
+            r_counts.setdefault(pid, {})
+            r_counts[pid][r["reaction_type"]] = r_counts[pid].get(r["reaction_type"], 0) + 1
+            if r["user_id"] == user["id"]:
+                r_mine[pid] = r["reaction_type"]
+    except Exception as e:
+        print(f"[feed] reactions query failed (table missing?): {e}")
 
-    # Media — hindi magka-crash kahit wala
-    cur.execute("SELECT post_id, media_type, media_data FROM post_media")
-    media_rows = cur.fetchall()
-    media_map = {m["post_id"]: (m["media_type"], m["media_data"]) for m in media_rows}
+    # Media — safe kahit wala pang post_media table
+    media_map = {}
+    try:
+        cur.execute("SELECT post_id, media_type, media_data FROM post_media")
+        media_map = {m["post_id"]: (m["media_type"], m["media_data"]) for m in cur.fetchall()}
+    except Exception as e:
+        print(f"[feed] media query failed (table missing?): {e}")
 
     post_data = []
     for p in posts:
-        cur.execute("""
-            SELECT c.*, u.full_name FROM comments c 
-            JOIN users u ON u.id = c.user_id
-            WHERE c.post_id = %s ORDER BY c.created_at ASC
-        """, (p["id"],))
-        comments = cur.fetchall()
+        try:
+            cur.execute("""
+                SELECT c.*, u.full_name FROM comments c
+                JOIN users u ON u.id = c.user_id
+                WHERE c.post_id = %s ORDER BY c.created_at ASC
+            """, (p["id"],))
+            comments = cur.fetchall()
+        except Exception as e:
+            print(f"[feed] comments query failed for post {p['id']}: {e}")
+            comments = []
         top = [c for c in comments if c["parent_id"] is None]
         replies = {}
+        reply_count = 0
         for c in comments:
             if c["parent_id"]:
                 replies.setdefault(c["parent_id"], []).append(c)
+                reply_count += 1
 
         post_data.append((
-            p, top, replies,
+            p, top, replies, reply_count,
             media_map.get(p["id"]),
             r_counts.get(p["id"], {}),
             r_mine.get(p["id"])
@@ -741,8 +788,9 @@ def _direct_conversations(db, uid):
         )
         rows = cur.fetchall()
     except Exception:
+        db.rollback()  # ✅ CRITICAL FIX
         return []
-    
+
     last = {}
     for r in rows:
         sender = r["sender_id"]
@@ -763,6 +811,7 @@ def _direct_conversations(db, uid):
                 "last_at": r["created_at"],
             })
         except Exception:
+            db.rollback()  # ✅ CRITICAL FIX
             continue
     return convos
 
@@ -784,6 +833,7 @@ def get_user_groups_safe(db, uid):
         )
         return cur.fetchall()
     except Exception:
+        db.rollback()  # ✅ CRITICAL FIX
         return []
 
 
@@ -812,6 +862,7 @@ def messages(other_id):
                        url_for("messages", other_id=user["id"]))
                 db.commit()
             except Exception as e:
+                db.rollback()  # ✅ CRITICAL FIX
                 flash(f"Failed to send message: {e}", "error")
         return redirect(url_for("messages", other_id=other_id))
 
@@ -840,6 +891,7 @@ def messages(other_id):
             )
             db.commit()
         except Exception as e:
+            db.rollback()  # ✅ CRITICAL FIX
             flash(f"Could not load conversation: {e}", "error")
 
     return render_template(
@@ -1223,6 +1275,16 @@ def forbidden(e):
 @app.errorhandler(404)
 def not_found(e):
     return render_template("error.html", code=404, message="Page not found."), 404
+
+@app.errorhandler(500)
+def server_error(e):
+    import traceback
+    tb = traceback.format_exc()
+    print("[500 ERROR]\n" + tb)
+    # Ipakita ang actual error sa page para madaling ma-debug (i-remove sa production)
+    msg = str(e.original_exception) if hasattr(e, "original_exception") else str(e)
+    return render_template("error.html", code=500,
+        message=f"Server error: {msg} (check server logs for full traceback)"), 500
 
 # Initialize DB on startup (safe — hindi nag-crash kahit may error)
 init_db()
