@@ -1,39 +1,77 @@
+"""
+SLSU-JGE Alumni Management System (UPDATED v2 — POSTGRESQL / NEON EDITION)
+Southern Luzon State University - Judge Guillermo Eleazar Campus
+Framework: Flask + PostgreSQL (Neon.tech) + Tailwind CSS  (GREEN THEME)
 
+=== [POSTGRES] DATABASE CONNECTION ===
+Set environment variable:
+  DATABASE_URL=postgresql://user:password@ep-xxx.region.aws.neon.tech/dbname?sslmode=require
+(Neon dashboard -> Connection Details -> "psql" / "Python" string. Keep sslmode=require.)
+
+Install driver:  pip install psycopg2-binary
+
+=== SQLite -> PostgreSQL changes made (marked [POSTGRES]) ===
+  - driver: sqlite3 -> psycopg2 (RealDictCursor for row["col"] access)
+  - placeholders: ? -> %s  (ALL queries)
+  - INTEGER PRIMARY KEY AUTOINCREMENT -> SERIAL PRIMARY KEY
+  - INSERT OR IGNORE -> INSERT ... ON CONFLICT (...) DO NOTHING
+  - INSERT OR REPLACE -> INSERT ... ON CONFLICT (...) DO UPDATE SET ...
+  - cursor.lastrowid -> INSERT ... RETURNING id  +  cur.fetchone()["id"]
+  - executescript() -> split by ; and execute each statement
+  - PRAGMA foreign_keys = ON -> removed (Postgres always enforces FK)
+  - auto-reconnect on dead connection (Neon drops idle connections)
+  - sslmode=require appended automatically if missing from URL
+
+=== v2 features preserved ===
+[CHANGED] Color theme -> university green (handled in base.html Tailwind config)
+[CHANGED] MAX_CONTENT_LENGTH = 55 MB for video uploads
+[NEW]     Tables: post_media, post_reactions, chat_groups, group_members, group_messages
+[NEW]     Photo/Video attachment on posts (base64 data URI in post_media)
+[NEW]     Facebook-style 6 reactions (like/love/wow/haha/sad/angry) -> /post/<id>/react
+[NEW]     Group chat: create group, add/remove members, rename, delete, group messages
+[CHANGED] Messages page lists 1-on-1 AND group chats with unread badges
+Existing tables/routes/features (users, graduate_master, posts, comments, likes,
+messages, notifications, homecoming_events, announcements, admin panel) preserved.
+"""
 import os
 import csv
 import io
 import base64
+import sys
 from datetime import datetime
 from functools import wraps
-from urllib.parse import urlparse
-
-import psycopg2
-from psycopg2.extras import RealDictCursor
 from flask import (
     Flask, g, render_template, request, redirect, url_for,
     session, flash, abort, jsonify
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 
-# ---------------------------------------------------------------------------
-# DATABASE CONFIGURATION — UPDATE THIS WITH YOUR NEON URL
-# ---------------------------------------------------------------------------
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql://username:password@hostname:5432/dbname?sslmode=require"
-)
-# ⚠️ PALITAN ANG NASA TAAS NG TUNAY NEON CONNECTION STRING
+# [POSTGRES] driver + connection
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+if not DATABASE_URL:
+    sys.stderr.write(
+        "\n[FATAL] DATABASE_URL environment variable is not set.\n"
+        "Set it to your Neon connection string, e.g.:\n"
+        "  export DATABASE_URL='postgresql://user:pass@ep-xxx.region.aws.neon.tech/dbname?sslmode=require'\n\n"
+    )
+    sys.exit(1)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "slsu-jge-alumni-change-this-key-in-production")
-app.config["MAX_CONTENT_LENGTH"] = 55 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 55 * 1024 * 1024  # 55 MB (max 50 MB video)
 
-# Reactions and media config — UNCHANGED
+# [NEW] Facebook-style reactions: code -> emoji
 REACTIONS = {
     "like": "👍", "love": "❤️", "wow": "😮",
     "haha": "😂", "sad": "😢", "angry": "😡",
 }
 
+# [NEW] Allowed media types for posts
 ALLOWED_MEDIA = {
     "jpg": ("image/jpeg", "image"), "jpeg": ("image/jpeg", "image"),
     "png": ("image/png", "image"), "gif": ("image/gif", "image"),
@@ -53,21 +91,51 @@ DEPARTMENTS = [
 ]
 
 # ---------------------------------------------------------------------------
-# DATABASE HELPERS — PostgreSQL Version
+# [POSTGRES] Database helpers
 # ---------------------------------------------------------------------------
+def _connect():
+    """Open a psycopg2 connection; force sslmode=require (Neon requirement)."""
+    url = DATABASE_URL
+    if "sslmode" not in url:
+        url += ("&" if "?" in url else "?") + "sslmode=require"
+    return psycopg2.connect(url, connect_timeout=15)
+
+
+class _PgConn:
+    """
+    Thin wrapper that mimics the old sqlite3 connection interface:
+      db.execute(sql, params) -> cursor (with .fetchone()/.fetchall())
+      db.commit() / db.close()
+    Every execute() opens a RealDictCursor on the shared connection.
+    """
+    def __init__(self, conn):
+        self.conn = conn
+
+    def execute(self, sql, params=None):
+        cur = self.conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(sql, params or ())
+        return cur
+
+    def commit(self):
+        self.conn.commit()
+
+    def close(self):
+        try:
+            self.conn.close()
+        except Exception:
+            pass
+
 
 def get_db():
     if "db" not in g:
-        parsed = urlparse(DATABASE_URL)
-        g.db = psycopg2.connect(
-            database=parsed.path[1:],
-            user=parsed.username,
-            password=parsed.password,
-            host=parsed.hostname,
-            port=parsed.port or 5432,
-            sslmode="require",
-            cursor_factory=RealDictCursor
-        )
+        g.db = _PgConn(_connect())
+    else:
+        # [POSTGRES] Neon drops idle connections — test liveness, reconnect if dead
+        try:
+            g.db.execute("SELECT 1")
+        except Exception:
+            g.db.close()
+            g.db = _PgConn(_connect())
     return g.db
 
 
@@ -78,9 +146,7 @@ def close_db(exc):
         db.close()
 
 
-# ---------------------------------------------------------------------------
-# SCHEMA — PostgreSQL Version (SERIAL instead of AUTOINCREMENT)
-# ---------------------------------------------------------------------------
+# [POSTGRES] Schema: SERIAL PRIMARY KEY instead of AUTOINCREMENT; %s placeholders everywhere.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
@@ -101,7 +167,6 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TEXT NOT NULL,
     last_login TEXT
 );
-
 CREATE TABLE IF NOT EXISTS graduate_master (
     id SERIAL PRIMARY KEY,
     full_name TEXT NOT NULL,
@@ -111,14 +176,12 @@ CREATE TABLE IF NOT EXISTS graduate_master (
     date_added TEXT NOT NULL,
     added_by_admin TEXT
 );
-
 CREATE TABLE IF NOT EXISTS posts (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     content TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
-
 CREATE TABLE IF NOT EXISTS comments (
     id SERIAL PRIMARY KEY,
     post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
@@ -127,21 +190,18 @@ CREATE TABLE IF NOT EXISTS comments (
     content TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
-
 CREATE TABLE IF NOT EXISTS likes (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
     UNIQUE(user_id, post_id)
 );
-
 CREATE TABLE IF NOT EXISTS comment_likes (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
     UNIQUE(user_id, comment_id)
 );
-
 CREATE TABLE IF NOT EXISTS messages (
     id SERIAL PRIMARY KEY,
     sender_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -150,7 +210,6 @@ CREATE TABLE IF NOT EXISTS messages (
     is_read INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
-
 CREATE TABLE IF NOT EXISTS notifications (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -160,7 +219,6 @@ CREATE TABLE IF NOT EXISTS notifications (
     is_read INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
-
 CREATE TABLE IF NOT EXISTS homecoming_events (
     id SERIAL PRIMARY KEY,
     title TEXT NOT NULL,
@@ -171,7 +229,6 @@ CREATE TABLE IF NOT EXISTS homecoming_events (
     description TEXT DEFAULT '',
     created_at TEXT NOT NULL
 );
-
 CREATE TABLE IF NOT EXISTS announcements (
     id SERIAL PRIMARY KEY,
     title TEXT NOT NULL,
@@ -180,7 +237,7 @@ CREATE TABLE IF NOT EXISTS announcements (
     is_published INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
 );
-
+-- ===================== [NEW TABLES — v2] =====================
 CREATE TABLE IF NOT EXISTS post_media (
     id SERIAL PRIMARY KEY,
     post_id INTEGER NOT NULL UNIQUE REFERENCES posts(id) ON DELETE CASCADE,
@@ -188,7 +245,6 @@ CREATE TABLE IF NOT EXISTS post_media (
     media_data TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
-
 CREATE TABLE IF NOT EXISTS post_reactions (
     id SERIAL PRIMARY KEY,
     post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
@@ -197,14 +253,12 @@ CREATE TABLE IF NOT EXISTS post_reactions (
     created_at TEXT NOT NULL,
     UNIQUE(post_id, user_id)
 );
-
 CREATE TABLE IF NOT EXISTS chat_groups (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
     created_by INTEGER NOT NULL REFERENCES users(id),
     created_at TEXT NOT NULL
 );
-
 CREATE TABLE IF NOT EXISTS group_members (
     id SERIAL PRIMARY KEY,
     group_id INTEGER NOT NULL REFERENCES chat_groups(id) ON DELETE CASCADE,
@@ -213,7 +267,6 @@ CREATE TABLE IF NOT EXISTS group_members (
     last_read_at TEXT,
     UNIQUE(group_id, user_id)
 );
-
 CREATE TABLE IF NOT EXISTS group_messages (
     id SERIAL PRIMARY KEY,
     group_id INTEGER NOT NULL REFERENCES chat_groups(id) ON DELETE CASCADE,
@@ -225,18 +278,10 @@ CREATE TABLE IF NOT EXISTS group_messages (
 
 
 def init_db():
-    parsed = urlparse(DATABASE_URL)
-    conn = psycopg2.connect(
-        database=parsed.path[1:],
-        user=parsed.username,
-        password=parsed.password,
-        host=parsed.hostname,
-        port=parsed.port or 5432,
-        sslmode="require"
-    )
-    cur = conn.cursor()
-
-    # Execute schema
+    """[POSTGRES] Create tables (idempotent) and seed defaults. Runs once at startup."""
+    conn = _connect()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    # split schema into statements and execute each (psycopg2 has no executescript)
     for stmt in SCHEMA.split(";"):
         stmt = stmt.strip()
         if stmt:
@@ -245,35 +290,33 @@ def init_db():
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Create default admin
+    # Seed default admin
     cur.execute("SELECT COUNT(*) AS c FROM users WHERE is_admin = 1")
-    if cur.fetchone()[0] == 0:
+    if cur.fetchone()["c"] == 0:
         cur.execute(
             """INSERT INTO users (full_name, student_number, department, year_graduated,
                email, contact, password_hash, status, verification_status, is_admin, created_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             ("System Administrator", "ADMIN-0001", "Administration", 2000,
              "admin@slsu.edu.ph", "09000000000",
              generate_password_hash("admin123"), "approved", "verified", 1, now),
         )
-
-    # Create sample alumni
+    # Seed demo alumni account
     cur.execute("SELECT COUNT(*) AS c FROM users WHERE email = %s", ("alumni@slsu.edu.ph",))
-    if cur.fetchone()[0] == 0:
+    if cur.fetchone()["c"] == 0:
         cur.execute(
             """INSERT INTO users (full_name, student_number, department, year_graduated,
                email, contact, password_hash, status, verification_status, is_admin,
                bio, employment, location, created_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             ("Juan Dela Cruz", "2018-0001", "College of Computer Studies", 2018,
              "alumni@slsu.edu.ph", "09170000000",
              generate_password_hash("alumni123"), "approved", "verified", 0,
              "Proud SLSU-JGE graduate.", "Software Engineer at TechCorp", "Manila, Philippines", now),
         )
-
-    # Sample graduate master list
+    # Seed sample master graduates
     cur.execute("SELECT COUNT(*) AS c FROM graduate_master")
-    if cur.fetchone()[0] == 0:
+    if cur.fetchone()["c"] == 0:
         samples = [
             ("Juan Dela Cruz", "2018-0001", "College of Computer Studies", 2018),
             ("Maria Santos", "2018-0025", "College of Teacher Education", 2018),
@@ -289,42 +332,37 @@ def init_db():
             ("Sofia Hernandez", "2023-0267", "College of Business and Management", 2023),
         ]
         for name, sn, dept, yr in samples:
+            # [POSTGRES] INSERT OR IGNORE -> ON CONFLICT (student_number) DO NOTHING
             cur.execute(
                 """INSERT INTO graduate_master
                    (full_name, student_number, department, year_graduated, date_added, added_by_admin)
-                   VALUES (%s, %s, %s, %s, %s, %s)
-                   ON CONFLICT (student_number) DO NOTHING""",
+                   VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (student_number) DO NOTHING""",
                 (name, sn, dept, yr, now, "System Administrator"),
             )
-
-    # Welcome announcement
+    # Seed sample announcement
     cur.execute("SELECT COUNT(*) AS c FROM announcements")
-    if cur.fetchone()[0] == 0:
+    if cur.fetchone()["c"] == 0:
         cur.execute(
-            "INSERT INTO announcements (title, content, created_by, is_published, created_at) VALUES (%s, %s, %s, %s, %s)",
+            "INSERT INTO announcements (title, content, created_by, is_published, created_at) VALUES (%s,%s,%s,%s,%s)",
             ("Welcome to the SLSU-JGE Alumni Portal",
              "This portal connects graduates of Southern Luzon State University - Judge Guillermo Eleazar Campus. "
              "Browse the public Graduate Directory, register your account, and join your fellow alumni.",
              1, 1, now),
         )
-
     conn.commit()
     cur.close()
     conn.close()
 
 
 # ---------------------------------------------------------------------------
-# Auth / Helper Functions — UNCHANGED
+# Auth / helper functions
 # ---------------------------------------------------------------------------
-
 def current_user():
     uid = session.get("user_id")
     if not uid:
         return None
     db = get_db()
-    cur = db.cursor()
-    cur.execute("SELECT * FROM users WHERE id = %s", (uid,))
-    return cur.fetchone()
+    return db.execute("SELECT * FROM users WHERE id = %s", (uid,)).fetchone()
 
 
 def login_required(f):
@@ -353,9 +391,8 @@ def admin_required(f):
 
 def notify(user_id, ntype, content, link=""):
     db = get_db()
-    cur = db.cursor()
-    cur.execute(
-        "INSERT INTO notifications (user_id, type, content, link, is_read, created_at) VALUES (%s, %s, %s, %s, 0, %s)",
+    db.execute(
+        "INSERT INTO notifications (user_id, type, content, link, is_read, created_at) VALUES (%s,%s,%s,%s,0,%s)",
         (user_id, ntype, content, link, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
     )
     db.commit()
@@ -366,22 +403,18 @@ def unread_count():
     if not user:
         return 0
     db = get_db()
-    cur = db.cursor()
-    cur.execute(
+    row = db.execute(
         "SELECT COUNT(*) AS c FROM notifications WHERE user_id = %s AND is_read = 0",
         (user["id"],),
-    )
-    row = cur.fetchone()
+    ).fetchone()
     return row["c"] if row else 0
 
 
 def distinct_departments():
     db = get_db()
-    cur = db.cursor()
-    cur.execute(
+    rows = db.execute(
         "SELECT DISTINCT department FROM graduate_master WHERE department IS NOT NULL AND department != '' ORDER BY department"
-    )
-    rows = cur.fetchall()
+    ).fetchall()
     depts = [r["department"] for r in rows]
     for d in DEPARTMENTS:
         if d not in depts:
@@ -389,9 +422,9 @@ def distinct_departments():
     return sorted(depts)
 
 
+# [NEW] Group chats the current user belongs to, with last message + unread count
 def get_user_groups(db, uid):
-    cur = db.cursor()
-    cur.execute(
+    return db.execute(
         """SELECT g.id, g.name, g.created_by,
            (SELECT message_text FROM group_messages WHERE group_id = g.id ORDER BY sent_at DESC LIMIT 1) AS last_msg,
            (SELECT sent_at FROM group_messages WHERE group_id = g.id ORDER BY sent_at DESC LIMIT 1) AS last_at,
@@ -400,8 +433,7 @@ def get_user_groups(db, uid):
            FROM chat_groups g JOIN group_members gm ON gm.group_id = g.id
            WHERE gm.user_id = %s ORDER BY COALESCE(last_at, '0000-01-01') DESC""",
         (uid, uid, uid),
-    )
-    return cur.fetchall()
+    ).fetchall()
 
 
 @app.template_filter("initials")
@@ -422,43 +454,34 @@ def inject_globals():
 
 
 # ---------------------------------------------------------------------------
-# Public Routes
+# Public routes (unchanged logic — placeholders converted to %s)
 # ---------------------------------------------------------------------------
-
 @app.route("/")
 def index():
     db = get_db()
-    cur = db.cursor()
-    cur.execute(
+    announcements = db.execute(
         "SELECT a.*, u.full_name AS author FROM announcements a LEFT JOIN users u ON u.id = a.created_by "
         "WHERE a.is_published = 1 ORDER BY a.created_at DESC LIMIT 10"
-    )
-    announcements = cur.fetchall()
-
-    cur.execute("SELECT COUNT(*) AS c FROM graduate_master")
-    grad_count = cur.fetchone()["c"]
-    cur.execute("SELECT COUNT(*) AS c FROM users WHERE status='approved' AND is_admin=0")
-    alumni_count = cur.fetchone()["c"]
-    cur.execute("SELECT COUNT(*) AS c FROM homecoming_events")
-    event_count = cur.fetchone()["c"]
-
-    stats = {"graduates": grad_count, "alumni": alumni_count, "events": event_count}
+    ).fetchall()
+    stats = {
+        "graduates": db.execute("SELECT COUNT(*) AS c FROM graduate_master").fetchone()["c"],
+        "alumni": db.execute("SELECT COUNT(*) AS c FROM users WHERE status='approved' AND is_admin=0").fetchone()["c"],
+        "events": db.execute("SELECT COUNT(*) AS c FROM homecoming_events").fetchone()["c"],
+    }
     return render_template("index.html", announcements=announcements, stats=stats)
 
 
 @app.route("/directory")
 def directory():
     db = get_db()
-    cur = db.cursor()
     q = request.args.get("q", "").strip()
     dept = request.args.get("department", "").strip()
     year_from = request.args.get("year_from", "").strip()
     year_to = request.args.get("year_to", "").strip()
-
     sql = "SELECT * FROM graduate_master WHERE 1=1"
     params = []
     if q:
-        sql += " AND (full_name ILIKE %s OR student_number ILIKE %s)"
+        sql += " AND (full_name LIKE %s OR student_number LIKE %s)"
         params += [f"%{q}%", f"%{q}%"]
     if dept:
         sql += " AND department = %s"
@@ -470,9 +493,7 @@ def directory():
         sql += " AND year_graduated <= %s"
         params.append(int(year_to))
     sql += " ORDER BY year_graduated DESC, full_name ASC LIMIT 500"
-
-    cur.execute(sql, params)
-    graduates = cur.fetchall()
+    graduates = db.execute(sql, params).fetchall()
     depts = distinct_departments()
     return render_template("directory.html", graduates=graduates, depts=depts,
                            q=q, dept=dept, year_from=year_from, year_to=year_to)
@@ -489,7 +510,6 @@ def register():
         contact = request.form.get("contact", "").strip()
         password = request.form.get("password", "")
         confirm = request.form.get("confirm", "")
-
         errors = []
         if not full_name or not student_number or not email or not password:
             errors.append("Full name, student number, email, and password are required.")
@@ -499,25 +519,18 @@ def register():
             errors.append("Passwords do not match.")
         if year_graduated and not year_graduated.isdigit():
             errors.append("Year graduated must be a number.")
-
         db = get_db()
-        cur = db.cursor()
-        cur.execute("SELECT 1 FROM users WHERE email = %s", (email,))
-        if cur.fetchone():
+        if db.execute("SELECT 1 FROM users WHERE email = %s", (email,)).fetchone():
             errors.append("An account with this email already exists.")
-
         if errors:
             for e in errors:
                 flash(e, "error")
             return render_template("register.html", depts=distinct_departments(), form=request.form)
-
-        cur.execute(
+        match = db.execute(
             """SELECT * FROM graduate_master WHERE student_number = %s
                AND lower(full_name) = lower(%s) AND year_graduated = %s""",
             (student_number, full_name, int(year_graduated) if year_graduated.isdigit() else -1),
-        )
-        match = cur.fetchone()
-
+        ).fetchone()
         if match:
             status = "pending_verified"
             verification = "verified"
@@ -528,12 +541,11 @@ def register():
             verification = "unverified"
             msg = ("Your information could not be automatically verified. "
                    "An administrator will review your registration manually.")
-
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cur.execute(
+        db.execute(
             """INSERT INTO users (full_name, student_number, department, year_graduated,
                email, contact, password_hash, status, verification_status, is_admin, created_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s)""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,0,%s)""",
             (full_name, student_number, department,
              int(year_graduated) if year_graduated.isdigit() else None,
              email, contact, generate_password_hash(password), status, verification, now),
@@ -541,7 +553,6 @@ def register():
         db.commit()
         flash(msg, "success")
         return redirect(url_for("login"))
-
     return render_template("register.html", depts=distinct_departments(), form={})
 
 
@@ -551,14 +562,10 @@ def login():
         email = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
         db = get_db()
-        cur = db.cursor()
-        cur.execute("SELECT * FROM users WHERE email = %s", (email,))
-        user = cur.fetchone()
-
+        user = db.execute("SELECT * FROM users WHERE email = %s", (email,)).fetchone()
         if not user or not check_password_hash(user["password_hash"], password):
             flash("Invalid email or password.", "error")
             return render_template("login.html")
-
         if user["status"] == "pending_verified":
             flash("Your account is verified and awaiting admin approval.", "warning")
             return render_template("login.html")
@@ -571,15 +578,13 @@ def login():
         if user["status"] == "deactivated":
             flash("Your account has been deactivated.", "error")
             return render_template("login.html")
-
         session["user_id"] = user["id"]
         session["is_admin"] = bool(user["is_admin"])
-        cur.execute("UPDATE users SET last_login = %s WHERE id = %s",
-                    (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user["id"]))
+        db.execute("UPDATE users SET last_login = %s WHERE id = %s",
+                   (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user["id"]))
         db.commit()
         nxt = request.args.get("next")
         return redirect(nxt or (url_for("admin_dashboard") if user["is_admin"] else url_for("feed")))
-
     return render_template("login.html")
 
 
@@ -591,17 +596,14 @@ def logout():
 
 
 # ---------------------------------------------------------------------------
-# Feed — Media Upload + Reactions
+# Alumni feed — media upload + reactions
 # ---------------------------------------------------------------------------
-
 @app.route("/feed", methods=["GET", "POST"])
 @login_required
 def feed():
     user = current_user()
     db = get_db()
-    cur = db.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
     if request.method == "POST":
         content = request.form.get("content", "").strip()
         media_file = request.files.get("media")
@@ -618,31 +620,29 @@ def feed():
             mime, mtype = ALLOWED_MEDIA[ext]
             data_uri = f"data:{mime};base64,{base64.b64encode(raw).decode()}"
             media_rec = (mtype, data_uri)
-
         if not content and not media_rec:
             flash("A post needs text, a photo, or a video.", "error")
             return redirect(url_for("feed"))
-
-        cur.execute("INSERT INTO posts (user_id, content, created_at) VALUES (%s, %s, %s)",
-                    (user["id"], content, now))
-        post_id = cur.lastrowid
+        # [POSTGRES] RETURNING id replaces lastrowid
+        cur = db.execute(
+            "INSERT INTO posts (user_id, content, created_at) VALUES (%s,%s,%s) RETURNING id",
+            (user["id"], content, now),
+        )
+        post_id = cur.fetchone()["id"]
         if media_rec:
-            cur.execute(
-                "INSERT INTO post_media (post_id, media_type, media_data, created_at) VALUES (%s, %s, %s, %s)",
+            db.execute(
+                "INSERT INTO post_media (post_id, media_type, media_data, created_at) VALUES (%s,%s,%s,%s)",
                 (post_id, media_rec[0], media_rec[1], now),
             )
         db.commit()
         return redirect(url_for("feed"))
 
-    cur.execute(
+    posts = db.execute(
         """SELECT p.*, u.full_name, u.department, u.year_graduated
            FROM posts p JOIN users u ON u.id = p.user_id
            ORDER BY p.created_at DESC LIMIT 100""",
-    )
-    posts = cur.fetchall()
-
-    cur.execute("SELECT post_id, reaction_type, user_id FROM post_reactions")
-    reaction_rows = cur.fetchall()
+    ).fetchall()
+    reaction_rows = db.execute("SELECT post_id, reaction_type, user_id FROM post_reactions").fetchall()
     r_counts, r_mine = {}, {}
     for r in reaction_rows:
         pid = r["post_id"]
@@ -650,18 +650,14 @@ def feed():
         r_counts[pid][r["reaction_type"]] = r_counts[pid].get(r["reaction_type"], 0) + 1
         if r["user_id"] == user["id"]:
             r_mine[pid] = r["reaction_type"]
-
-    cur.execute("SELECT post_id, media_type, media_data FROM post_media")
-    media_rows = cur.fetchall()
+    media_rows = db.execute("SELECT post_id, media_type, media_data FROM post_media").fetchall()
     media_map = {m["post_id"]: (m["media_type"], m["media_data"]) for m in media_rows}
-
     post_data = []
     for p in posts:
-        cur.execute(
+        comments = db.execute(
             """SELECT c.*, u.full_name FROM comments c JOIN users u ON u.id = c.user_id
                WHERE c.post_id = %s ORDER BY c.created_at ASC""", (p["id"],)
-        )
-        comments = cur.fetchall()
+        ).fetchall()
         top = [c for c in comments if c["parent_id"] is None]
         replies = {}
         for c in comments:
@@ -669,10 +665,10 @@ def feed():
                 replies.setdefault(c["parent_id"], []).append(c)
         post_data.append((p, top, replies, media_map.get(p["id"]),
                           r_counts.get(p["id"], {}), r_mine.get(p["id"])))
-
     return render_template("feed.html", post_data=post_data)
 
 
+# Reaction endpoint — replaces old single-heart like. Same type again = remove.
 @app.route("/post/<int:post_id>/react", methods=["POST"])
 @login_required
 def react(post_id):
@@ -681,27 +677,22 @@ def react(post_id):
     if rtype not in REACTIONS:
         rtype = "like"
     db = get_db()
-    cur = db.cursor()
-    cur.execute(
-        "SELECT id, reaction_type FROM post_reactions WHERE post_id = %s AND user_id = %s",
+    existing = db.execute(
+        "SELECT id, reaction_type FROM post_reactions WHERE post_id=%s AND user_id=%s",
         (post_id, user["id"]),
-    )
-    existing = cur.fetchone()
+    ).fetchone()
     if existing and existing["reaction_type"] == rtype:
-        cur.execute("DELETE FROM post_reactions WHERE id = %s", (existing["id"],))
+        db.execute("DELETE FROM post_reactions WHERE id=%s", (existing["id"],))
     else:
-        if existing:
-            cur.execute(
-                "UPDATE post_reactions SET reaction_type = %s, created_at = %s WHERE id = %s",
-                (rtype, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), existing["id"]),
-            )
-        else:
-            cur.execute(
-                "INSERT INTO post_reactions (post_id, user_id, reaction_type, created_at) VALUES (%s, %s, %s, %s)",
-                (post_id, user["id"], rtype, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-            )
-        cur.execute("SELECT user_id FROM posts WHERE id = %s", (post_id,))
-        post = cur.fetchone()
+        # [POSTGRES] INSERT OR REPLACE -> ON CONFLICT DO UPDATE
+        db.execute(
+            """INSERT INTO post_reactions (post_id, user_id, reaction_type, created_at)
+               VALUES (%s,%s,%s,%s)
+               ON CONFLICT (post_id, user_id) DO UPDATE
+               SET reaction_type = EXCLUDED.reaction_type, created_at = EXCLUDED.created_at""",
+            (post_id, user["id"], rtype, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        post = db.execute("SELECT user_id FROM posts WHERE id=%s", (post_id,)).fetchone()
         if post and post["user_id"] != user["id"]:
             notify(post["user_id"], "reaction",
                    f"{user['full_name']} reacted {REACTIONS[rtype]} to your post.", url_for("feed"))
@@ -717,13 +708,11 @@ def add_comment(post_id):
     parent_id = request.form.get("parent_id") or None
     if content:
         db = get_db()
-        cur = db.cursor()
-        cur.execute(
-            "INSERT INTO comments (post_id, user_id, parent_id, content, created_at) VALUES (%s, %s, %s, %s, %s)",
+        db.execute(
+            "INSERT INTO comments (post_id, user_id, parent_id, content, created_at) VALUES (%s,%s,%s,%s,%s)",
             (post_id, user["id"], parent_id, content, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
         )
-        cur.execute("SELECT user_id FROM posts WHERE id = %s", (post_id,))
-        post = cur.fetchone()
+        post = db.execute("SELECT user_id FROM posts WHERE id=%s", (post_id,)).fetchone()
         if post and post["user_id"] != user["id"]:
             notify(post["user_id"], "comment", f"{user['full_name']} commented on your post.", url_for("feed"))
         db.commit()
@@ -735,11 +724,9 @@ def add_comment(post_id):
 def delete_post(post_id):
     user = current_user()
     db = get_db()
-    cur = db.cursor()
-    cur.execute("SELECT user_id FROM posts WHERE id = %s", (post_id,))
-    post = cur.fetchone()
+    post = db.execute("SELECT user_id FROM posts WHERE id=%s", (post_id,)).fetchone()
     if post and (post["user_id"] == user["id"] or user["is_admin"]):
-        cur.execute("DELETE FROM posts WHERE id = %s", (post_id,))
+        db.execute("DELETE FROM posts WHERE id=%s", (post_id,))  # cascade deletes media + reactions
         db.commit()
     return redirect(url_for("feed"))
 
@@ -749,12 +736,10 @@ def delete_post(post_id):
 def my_homecoming():
     user = current_user()
     db = get_db()
-    cur = db.cursor()
-    cur.execute(
+    events = db.execute(
         """SELECT * FROM homecoming_events WHERE target_year IS NULL OR target_year = %s
            ORDER BY event_date ASC""", (user["year_graduated"],)
-    )
-    events = cur.fetchall()
+    ).fetchall()
     return render_template("homecoming.html", events=events)
 
 
@@ -762,36 +747,31 @@ def my_homecoming():
 @login_required
 def alumni_directory():
     db = get_db()
-    cur = db.cursor()
     q = request.args.get("q", "").strip()
     dept = request.args.get("department", "").strip()
     sql = "SELECT * FROM users WHERE status='approved' AND is_admin=0"
     params = []
     if q:
-        sql += " AND (full_name ILIKE %s OR student_number ILIKE %s)"
+        sql += " AND (full_name LIKE %s OR student_number LIKE %s)"
         params += [f"%{q}%", f"%{q}%"]
     if dept:
         sql += " AND department = %s"
         params.append(dept)
     sql += " ORDER BY full_name ASC LIMIT 500"
-    cur.execute(sql, params)
-    alumni = cur.fetchall()
+    alumni = db.execute(sql, params).fetchall()
     depts = sorted({a["department"] for a in alumni if a["department"]})
     return render_template("alumni_directory.html", alumni=alumni, depts=depts, q=q, dept=dept)
 
 
 # ---------------------------------------------------------------------------
-# Messages — 1-on-1 + Group Chats
+# Messages — 1-on-1 + group chats
 # ---------------------------------------------------------------------------
-
 def _direct_conversations(db, uid):
-    cur = db.cursor()
-    cur.execute(
+    rows = db.execute(
         "SELECT sender_id, receiver_id, content, created_at FROM messages "
         "WHERE sender_id = %s OR receiver_id = %s ORDER BY created_at DESC",
         (uid, uid),
-    )
-    rows = cur.fetchall()
+    ).fetchall()
     last = {}
     for r in rows:
         other = r["receiver_id"] if r["sender_id"] == uid else r["sender_id"]
@@ -799,8 +779,7 @@ def _direct_conversations(db, uid):
             last[other] = r
     convos = []
     for other_id, r in last.items():
-        cur.execute("SELECT full_name FROM users WHERE id = %s", (other_id,))
-        urow = cur.fetchone()
+        urow = db.execute("SELECT full_name FROM users WHERE id = %s", (other_id,)).fetchone()
         convos.append({
             "other_id": other_id,
             "other_name": urow["full_name"] if urow else "Unknown",
@@ -816,57 +795,48 @@ def _direct_conversations(db, uid):
 def messages(other_id):
     user = current_user()
     db = get_db()
-    cur = db.cursor()
-
     if request.method == "POST" and other_id:
         content = request.form.get("content", "").strip()
         if content:
-            cur.execute(
-                "INSERT INTO messages (sender_id, receiver_id, content, created_at) VALUES (%s, %s, %s, %s)",
+            db.execute(
+                "INSERT INTO messages (sender_id, receiver_id, content, created_at) VALUES (%s,%s,%s,%s)",
                 (user["id"], other_id, content, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
             )
             notify(other_id, "message", f"New message from {user['full_name']}.",
                    url_for("messages", other_id=user["id"]))
             db.commit()
         return redirect(url_for("messages", other_id=other_id))
-
     convos = _direct_conversations(db, user["id"])
     groups = get_user_groups(db, user["id"])
-
     thread = []
     other = None
     if other_id:
-        cur.execute("SELECT * FROM users WHERE id = %s", (other_id,))
-        other = cur.fetchone()
-        cur.execute(
+        other = db.execute("SELECT * FROM users WHERE id=%s", (other_id,)).fetchone()
+        thread = db.execute(
             """SELECT sender_id, content, created_at FROM messages
-               WHERE (sender_id = %s AND receiver_id = %s) OR (sender_id = %s AND receiver_id = %s)
+               WHERE (sender_id=%s AND receiver_id=%s) OR (sender_id=%s AND receiver_id=%s)
                ORDER BY created_at ASC""",
             (user["id"], other_id, other_id, user["id"]),
-        )
-        thread = cur.fetchall()
-        cur.execute("UPDATE messages SET is_read = 1 WHERE sender_id = %s AND receiver_id = %s",
-                    (other_id, user["id"]))
+        ).fetchall()
+        db.execute("UPDATE messages SET is_read=1 WHERE sender_id=%s AND receiver_id=%s",
+                   (other_id, user["id"]))
         db.commit()
-
     return render_template("messages.html", convos=convos, groups=groups,
                            thread=thread, other=other, other_id=other_id,
                            group=None, members=None, alumni=None, is_creator=False)
 
 
+# Create a group chat
 @app.route("/messages/group/new", methods=["GET", "POST"])
 @login_required
 def group_new():
     user = current_user()
     db = get_db()
-    cur = db.cursor()
-    cur.execute(
+    alumni = db.execute(
         "SELECT id, full_name, department, year_graduated FROM users "
         "WHERE status='approved' AND is_admin=0 AND id != %s ORDER BY full_name",
         (user["id"],),
-    )
-    alumni = cur.fetchall()
-
+    ).fetchall()
     if request.method == "POST":
         name = request.form.get("name", "").strip()
         member_ids = request.form.getlist("members")
@@ -874,11 +844,14 @@ def group_new():
             flash("Group name is required.", "error")
             return redirect(url_for("group_new"))
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cur.execute("INSERT INTO chat_groups (name, created_by, created_at) VALUES (%s, %s, %s)",
-                    (name, user["id"], now))
-        gid = cur.lastrowid
-        cur.execute(
-            "INSERT INTO group_members (group_id, user_id, joined_at, last_read_at) VALUES (%s, %s, %s, %s)",
+        # [POSTGRES] RETURNING id
+        cur = db.execute(
+            "INSERT INTO chat_groups (name, created_by, created_at) VALUES (%s,%s,%s) RETURNING id",
+            (name, user["id"], now),
+        )
+        gid = cur.fetchone()["id"]
+        db.execute(
+            "INSERT INTO group_members (group_id, user_id, joined_at, last_read_at) VALUES (%s,%s,%s,%s)",
             (gid, user["id"], now, now),
         )
         for mid in member_ids:
@@ -886,8 +859,9 @@ def group_new():
                 mid = int(mid)
             except ValueError:
                 continue
-            cur.execute(
-                "INSERT INTO group_members (group_id, user_id, joined_at) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+            # [POSTGRES] INSERT OR IGNORE -> ON CONFLICT DO NOTHING
+            db.execute(
+                "INSERT INTO group_members (group_id, user_id, joined_at) VALUES (%s,%s,%s) ON CONFLICT (group_id, user_id) DO NOTHING",
                 (gid, mid, now),
             )
             notify(mid, "group", f"{user['full_name']} added you to the group '{name}'.",
@@ -898,64 +872,56 @@ def group_new():
     return render_template("create_group.html", alumni=alumni)
 
 
+# View / send in a group chat
 @app.route("/messages/group/<int:gid>", methods=["GET", "POST"])
 @login_required
 def group_thread(gid):
     user = current_user()
     db = get_db()
-    cur = db.cursor()
-    cur.execute("SELECT * FROM group_members WHERE group_id = %s AND user_id = %s", (gid, user["id"]))
-    membership = cur.fetchone()
+    membership = db.execute(
+        "SELECT * FROM group_members WHERE group_id=%s AND user_id=%s", (gid, user["id"])
+    ).fetchone()
     if not membership:
         abort(403)
-    cur.execute("SELECT * FROM chat_groups WHERE id = %s", (gid,))
-    group = cur.fetchone()
+    group = db.execute("SELECT * FROM chat_groups WHERE id=%s", (gid,)).fetchone()
     if not group:
         abort(404)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
     if request.method == "POST":
         text = request.form.get("content", "").strip()
         if text:
-            cur.execute(
-                "INSERT INTO group_messages (group_id, sender_id, message_text, sent_at) VALUES (%s, %s, %s, %s)",
+            db.execute(
+                "INSERT INTO group_messages (group_id, sender_id, message_text, sent_at) VALUES (%s,%s,%s,%s)",
                 (gid, user["id"], text, now),
             )
-            cur.execute("SELECT user_id FROM group_members WHERE group_id = %s AND user_id != %s", (gid, user["id"]))
-            members = cur.fetchall()
+            members = db.execute(
+                "SELECT user_id FROM group_members WHERE group_id=%s AND user_id != %s", (gid, user["id"])
+            ).fetchall()
             for m in members:
                 notify(m["user_id"], "group",
                        f"New message in '{group['name']}' from {user['full_name']}.",
                        url_for("group_thread", gid=gid))
             db.commit()
         return redirect(url_for("group_thread", gid=gid))
-
-    cur.execute("UPDATE group_members SET last_read_at = %s WHERE group_id = %s AND user_id = %s",
-                (now, gid, user["id"]))
+    db.execute("UPDATE group_members SET last_read_at=%s WHERE group_id=%s AND user_id=%s",
+               (now, gid, user["id"]))
     db.commit()
-
-    cur.execute(
+    thread = db.execute(
         """SELECT gm.sender_id, gm.message_text AS content, gm.sent_at AS created_at,
                   u.full_name AS sender_name
            FROM group_messages gm JOIN users u ON u.id = gm.sender_id
-           WHERE gm.group_id = %s ORDER BY gm.sent_at ASC""", (gid,),
-    )
-    thread = cur.fetchall()
-
-    cur.execute(
+           WHERE gm.group_id=%s ORDER BY gm.sent_at ASC""", (gid,),
+    ).fetchall()
+    members = db.execute(
         """SELECT gm.user_id, u.full_name, u.email
            FROM group_members gm JOIN users u ON u.id = gm.user_id
-           WHERE gm.group_id = %s ORDER BY u.full_name""", (gid,),
-    )
-    members = cur.fetchall()
-
-    cur.execute(
+           WHERE gm.group_id=%s ORDER BY u.full_name""", (gid,),
+    ).fetchall()
+    alumni = db.execute(
         """SELECT id, full_name FROM users WHERE status='approved' AND is_admin=0
-           AND id NOT IN (SELECT user_id FROM group_members WHERE group_id = %s) ORDER BY full_name""",
+           AND id NOT IN (SELECT user_id FROM group_members WHERE group_id=%s) ORDER BY full_name""",
         (gid,),
-    )
-    alumni = cur.fetchall()
-
+    ).fetchall()
     convos = _direct_conversations(db, user["id"])
     groups = get_user_groups(db, user["id"])
     is_creator = group["created_by"] == user["id"]
@@ -964,9 +930,9 @@ def group_thread(gid):
                            alumni=alumni, is_creator=is_creator)
 
 
-def _group_creator_only(cur, gid, uid):
-    cur.execute("SELECT created_by FROM chat_groups WHERE id = %s", (gid,))
-    g = cur.fetchone()
+# Group admin actions (creator only)
+def _group_creator_only(db, gid, uid):
+    g = db.execute("SELECT created_by FROM chat_groups WHERE id=%s", (gid,)).fetchone()
     return g and g["created_by"] == uid
 
 
@@ -975,18 +941,16 @@ def _group_creator_only(cur, gid, uid):
 def group_add_member(gid):
     user = current_user()
     db = get_db()
-    cur = db.cursor()
-    if not _group_creator_only(cur, gid, user["id"]):
+    if not _group_creator_only(db, gid, user["id"]):
         abort(403)
     new_id = request.form.get("user_id")
     if new_id and new_id.isdigit():
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cur.execute(
-            "INSERT INTO group_members (group_id, user_id, joined_at) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+        db.execute(
+            "INSERT INTO group_members (group_id, user_id, joined_at) VALUES (%s,%s,%s) ON CONFLICT (group_id, user_id) DO NOTHING",
             (gid, int(new_id), now),
         )
-        cur.execute("SELECT name FROM chat_groups WHERE id = %s", (gid,))
-        g = cur.fetchone()
+        g = db.execute("SELECT name FROM chat_groups WHERE id=%s", (gid,)).fetchone()
         notify(int(new_id), "group", f"You were added to the group '{g['name']}'.", url_for("group_thread", gid=gid))
         db.commit()
         flash("Member added.", "success")
@@ -998,15 +962,13 @@ def group_add_member(gid):
 def group_remove_member(gid, uid):
     user = current_user()
     db = get_db()
-    cur = db.cursor()
-    if not _group_creator_only(cur, gid, user["id"]):
+    if not _group_creator_only(db, gid, user["id"]):
         abort(403)
-    cur.execute("SELECT created_by FROM chat_groups WHERE id = %s", (gid,))
-    g = cur.fetchone()
+    g = db.execute("SELECT created_by FROM chat_groups WHERE id=%s", (gid,)).fetchone()
     if g and g["created_by"] == uid:
         flash("The group creator cannot be removed.", "error")
     else:
-        cur.execute("DELETE FROM group_members WHERE group_id = %s AND user_id = %s", (gid, uid))
+        db.execute("DELETE FROM group_members WHERE group_id=%s AND user_id=%s", (gid, uid))
         db.commit()
         flash("Member removed.", "info")
     return redirect(url_for("group_thread", gid=gid))
@@ -1017,12 +979,11 @@ def group_remove_member(gid, uid):
 def group_rename(gid):
     user = current_user()
     db = get_db()
-    cur = db.cursor()
-    if not _group_creator_only(cur, gid, user["id"]):
+    if not _group_creator_only(db, gid, user["id"]):
         abort(403)
     new_name = request.form.get("name", "").strip()
     if new_name:
-        cur.execute("UPDATE chat_groups SET name = %s WHERE id = %s", (new_name, gid))
+        db.execute("UPDATE chat_groups SET name=%s WHERE id=%s", (new_name, gid))
         db.commit()
         flash("Group renamed.", "success")
     return redirect(url_for("group_thread", gid=gid))
@@ -1033,10 +994,9 @@ def group_rename(gid):
 def group_delete(gid):
     user = current_user()
     db = get_db()
-    cur = db.cursor()
-    if not _group_creator_only(cur, gid, user["id"]):
+    if not _group_creator_only(db, gid, user["id"]):
         abort(403)
-    cur.execute("DELETE FROM chat_groups WHERE id = %s", (gid,))
+    db.execute("DELETE FROM chat_groups WHERE id=%s", (gid,))  # cascade members + messages
     db.commit()
     flash("Group deleted.", "info")
     return redirect(url_for("messages"))
@@ -1047,11 +1007,9 @@ def group_delete(gid):
 def notifications():
     user = current_user()
     db = get_db()
-    cur = db.cursor()
-    cur.execute("SELECT * FROM notifications WHERE user_id = %s ORDER BY created_at DESC LIMIT 100",
-                (user["id"],))
-    items = cur.fetchall()
-    cur.execute("UPDATE notifications SET is_read = 1 WHERE user_id = %s", (user["id"],))
+    items = db.execute("SELECT * FROM notifications WHERE user_id=%s ORDER BY created_at DESC LIMIT 100",
+                       (user["id"],)).fetchall()
+    db.execute("UPDATE notifications SET is_read=1 WHERE user_id=%s", (user["id"],))
     db.commit()
     return render_template("notifications.html", items=items)
 
@@ -1061,15 +1019,14 @@ def notifications():
 def profile():
     user = current_user()
     db = get_db()
-    cur = db.cursor()
     if request.method == "POST":
         bio = request.form.get("bio", "").strip()
         employment = request.form.get("employment", "").strip()
         location = request.form.get("location", "").strip()
         contact = request.form.get("contact", "").strip()
         profile_pic = request.form.get("profile_pic", "").strip()
-        cur.execute(
-            "UPDATE users SET bio = %s, employment = %s, location = %s, contact = %s, profile_pic = %s WHERE id = %s",
+        db.execute(
+            "UPDATE users SET bio=%s, employment=%s, location=%s, contact=%s, profile_pic=%s WHERE id=%s",
             (bio, employment, location, contact, profile_pic, user["id"]),
         )
         db.commit()
@@ -1079,28 +1036,21 @@ def profile():
 
 
 # ---------------------------------------------------------------------------
-# Admin Panel
+# Admin panel (unchanged logic — placeholders converted)
 # ---------------------------------------------------------------------------
-
 @app.route("/admin")
 @admin_required
 def admin_dashboard():
     db = get_db()
-    cur = db.cursor()
-    cur.execute("SELECT COUNT(*) AS c FROM users WHERE status LIKE 'pending_%%'")
-    pending = cur.fetchone()["c"]
-    cur.execute("SELECT COUNT(*) AS c FROM users WHERE status='approved' AND is_admin=0")
-    approved = cur.fetchone()["c"]
-    cur.execute("SELECT COUNT(*) AS c FROM graduate_master")
-    graduates = cur.fetchone()["c"]
-    cur.execute("SELECT COUNT(*) AS c FROM posts")
-    posts = cur.fetchone()["c"]
-    stats = {"pending": pending, "approved": approved, "graduates": graduates, "posts": posts}
-
-    cur.execute(
+    stats = {
+        "pending": db.execute("SELECT COUNT(*) c FROM users WHERE status LIKE 'pending_%%'").fetchone()["c"],
+        "approved": db.execute("SELECT COUNT(*) c FROM users WHERE status='approved' AND is_admin=0").fetchone()["c"],
+        "graduates": db.execute("SELECT COUNT(*) c FROM graduate_master").fetchone()["c"],
+        "posts": db.execute("SELECT COUNT(*) c FROM posts").fetchone()["c"],
+    }
+    recent = db.execute(
         "SELECT * FROM users WHERE status LIKE 'pending_%%' ORDER BY created_at DESC LIMIT 10"
-    )
-    recent = cur.fetchall()
+    ).fetchall()
     return render_template("admin/dashboard.html", stats=stats, recent=recent)
 
 
@@ -1108,7 +1058,6 @@ def admin_dashboard():
 @admin_required
 def admin_graduates():
     db = get_db()
-    cur = db.cursor()
     if request.method == "POST" and request.form.get("action") == "add":
         full_name = request.form.get("full_name", "").strip()
         student_number = request.form.get("student_number", "").strip()
@@ -1116,11 +1065,10 @@ def admin_graduates():
         year_graduated = request.form.get("year_graduated", "").strip()
         if full_name and student_number:
             try:
-                cur.execute(
+                db.execute(
                     """INSERT INTO graduate_master
                        (full_name, student_number, department, year_graduated, date_added, added_by_admin)
-                       VALUES (%s, %s, %s, %s, %s, %s)
-                       ON CONFLICT (student_number) DO NOTHING""",
+                       VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (student_number) DO NOTHING""",
                     (full_name, student_number, department,
                      int(year_graduated) if year_graduated.isdigit() else None,
                      datetime.now().strftime("%Y-%m-%d %H:%M:%S"), current_user()["full_name"]),
@@ -1132,16 +1080,14 @@ def admin_graduates():
         else:
             flash("Full name and student number are required.", "error")
         return redirect(url_for("admin_graduates"))
-
     q = request.args.get("q", "").strip()
     sql = "SELECT * FROM graduate_master WHERE 1=1"
     params = []
     if q:
-        sql += " AND (full_name ILIKE %s OR student_number ILIKE %s)"
+        sql += " AND (full_name LIKE %s OR student_number LIKE %s)"
         params += [f"%{q}%", f"%{q}%"]
     sql += " ORDER BY year_graduated DESC, full_name ASC LIMIT 500"
-    cur.execute(sql, params)
-    graduates = cur.fetchall()
+    graduates = db.execute(sql, params).fetchall()
     return render_template("admin/graduates.html", graduates=graduates, q=q, depts=distinct_departments())
 
 
@@ -1149,7 +1095,6 @@ def admin_graduates():
 @admin_required
 def admin_graduates_upload():
     db = get_db()
-    cur = db.cursor()
     file = request.files.get("file")
     if not file or not file.filename.endswith(".csv"):
         flash("Please upload a CSV file.", "error")
@@ -1165,11 +1110,10 @@ def admin_graduates_upload():
             dept = (row.get("department") or row.get("Department") or "").strip()
             yr = (row.get("year_graduated") or row.get("Year Graduated") or "").strip()
             if name and sn:
-                cur.execute(
+                db.execute(
                     """INSERT INTO graduate_master
                        (full_name, student_number, department, year_graduated, date_added, added_by_admin)
-                       VALUES (%s, %s, %s, %s, %s, %s)
-                       ON CONFLICT (student_number) DO NOTHING""",
+                       VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (student_number) DO NOTHING""",
                     (name, sn, dept, int(yr) if str(yr).isdigit() else None, now, current_user()["full_name"]),
                 )
                 added += 1
@@ -1184,13 +1128,12 @@ def admin_graduates_upload():
 @admin_required
 def admin_graduate_edit(gid):
     db = get_db()
-    cur = db.cursor()
     full_name = request.form.get("full_name", "").strip()
     student_number = request.form.get("student_number", "").strip()
     department = request.form.get("department", "").strip()
     year_graduated = request.form.get("year_graduated", "").strip()
-    cur.execute(
-        "UPDATE graduate_master SET full_name = %s, student_number = %s, department = %s, year_graduated = %s WHERE id = %s",
+    db.execute(
+        "UPDATE graduate_master SET full_name=%s, student_number=%s, department=%s, year_graduated=%s WHERE id=%s",
         (full_name, student_number, department,
          int(year_graduated) if year_graduated.isdigit() else None, gid),
     )
@@ -1203,8 +1146,7 @@ def admin_graduate_edit(gid):
 @admin_required
 def admin_graduate_delete(gid):
     db = get_db()
-    cur = db.cursor()
-    cur.execute("DELETE FROM graduate_master WHERE id = %s", (gid,))
+    db.execute("DELETE FROM graduate_master WHERE id=%s", (gid,))
     db.commit()
     flash("Graduate record deleted.", "info")
     return redirect(url_for("admin_graduates"))
@@ -1214,11 +1156,9 @@ def admin_graduate_delete(gid):
 @admin_required
 def admin_approvals():
     db = get_db()
-    cur = db.cursor()
-    cur.execute(
+    pending = db.execute(
         "SELECT * FROM users WHERE status LIKE 'pending_%%' ORDER BY created_at ASC"
-    )
-    pending = cur.fetchall()
+    ).fetchall()
     return render_template("admin/approvals.html", pending=pending)
 
 
@@ -1226,22 +1166,20 @@ def admin_approvals():
 @admin_required
 def admin_approval_action(uid, action):
     db = get_db()
-    cur = db.cursor()
-    cur.execute("SELECT * FROM users WHERE id = %s", (uid,))
-    user = cur.fetchone()
+    user = db.execute("SELECT * FROM users WHERE id=%s", (uid,)).fetchone()
     if not user:
         abort(404)
     if action == "approve":
-        cur.execute("UPDATE users SET status = 'approved' WHERE id = %s", (uid,))
+        db.execute("UPDATE users SET status='approved' WHERE id=%s", (uid,))
         notify(uid, "approval", "Your alumni account has been approved. Welcome to the SLSU-JGE alumni community!",
                url_for("feed"))
         flash(f"Approved {user['full_name']}.", "success")
     elif action == "reject":
-        cur.execute("UPDATE users SET status = 'rejected' WHERE id = %s", (uid,))
+        db.execute("UPDATE users SET status='rejected' WHERE id=%s", (uid,))
         notify(uid, "approval", "Your registration was not approved. Contact the registrar for assistance.", "")
         flash(f"Rejected {user['full_name']}.", "info")
     elif action == "verify":
-        cur.execute("UPDATE users SET status = 'pending_verified', verification_status = 'verified' WHERE id = %s", (uid,))
+        db.execute("UPDATE users SET status='pending_verified', verification_status='verified' WHERE id=%s", (uid,))
         flash(f"Manually verified {user['full_name']}.", "success")
     db.commit()
     return redirect(url_for("admin_approvals"))
@@ -1251,9 +1189,7 @@ def admin_approval_action(uid, action):
 @admin_required
 def admin_users():
     db = get_db()
-    cur = db.cursor()
-    cur.execute("SELECT * FROM users WHERE is_admin = 0 ORDER BY created_at DESC")
-    users = cur.fetchall()
+    users = db.execute("SELECT * FROM users WHERE is_admin=0 ORDER BY created_at DESC").fetchall()
     return render_template("admin/users.html", users=users)
 
 
@@ -1265,12 +1201,11 @@ def admin_user_action(uid, action):
         flash("You cannot modify your own account.", "error")
         return redirect(url_for("admin_users"))
     db = get_db()
-    cur = db.cursor()
     if action == "deactivate":
-        cur.execute("UPDATE users SET status = 'deactivated' WHERE id = %s", (uid,))
+        db.execute("UPDATE users SET status='deactivated' WHERE id=%s", (uid,))
         flash("Account deactivated.", "info")
     elif action == "activate":
-        cur.execute("UPDATE users SET status = 'approved' WHERE id = %s", (uid,))
+        db.execute("UPDATE users SET status='approved' WHERE id=%s", (uid,))
         flash("Account activated.", "success")
     db.commit()
     return redirect(url_for("admin_users"))
@@ -1280,7 +1215,6 @@ def admin_user_action(uid, action):
 @admin_required
 def admin_homecoming():
     db = get_db()
-    cur = db.cursor()
     if request.method == "POST":
         title = request.form.get("title", "").strip()
         target_year = request.form.get("target_year", "").strip()
@@ -1289,9 +1223,9 @@ def admin_homecoming():
         deadline = request.form.get("registration_deadline", "").strip()
         description = request.form.get("description", "").strip()
         if title:
-            cur.execute(
+            db.execute(
                 """INSERT INTO homecoming_events (title, target_year, event_date, venue,
-                   registration_deadline, description, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                   registration_deadline, description, created_at) VALUES (%s,%s,%s,%s,%s,%s,%s)""",
                 (title, int(target_year) if target_year.isdigit() else None,
                  event_date or None, venue, deadline or None, description,
                  datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
@@ -1299,8 +1233,7 @@ def admin_homecoming():
             db.commit()
             flash("Homecoming event added.", "success")
         return redirect(url_for("admin_homecoming"))
-    cur.execute("SELECT * FROM homecoming_events ORDER BY event_date DESC")
-    events = cur.fetchall()
+    events = db.execute("SELECT * FROM homecoming_events ORDER BY event_date DESC").fetchall()
     return render_template("admin/homecoming.html", events=events)
 
 
@@ -1308,8 +1241,7 @@ def admin_homecoming():
 @admin_required
 def admin_homecoming_delete(eid):
     db = get_db()
-    cur = db.cursor()
-    cur.execute("DELETE FROM homecoming_events WHERE id = %s", (eid,))
+    db.execute("DELETE FROM homecoming_events WHERE id=%s", (eid,))
     db.commit()
     flash("Event deleted.", "info")
     return redirect(url_for("admin_homecoming"))
@@ -1319,28 +1251,25 @@ def admin_homecoming_delete(eid):
 @admin_required
 def admin_announcements():
     db = get_db()
-    cur = db.cursor()
     me = current_user()
     if request.method == "POST":
         title = request.form.get("title", "").strip()
         content = request.form.get("content", "").strip()
         if title and content:
-            cur.execute(
-                "INSERT INTO announcements (title, content, created_by, is_published, created_at) VALUES (%s, %s, %s, 1, %s)",
+            db.execute(
+                "INSERT INTO announcements (title, content, created_by, is_published, created_at) VALUES (%s,%s,%s,1,%s)",
                 (title, content, me["id"], datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
             )
             db.commit()
-            cur.execute("SELECT id FROM users WHERE status = 'approved' AND is_admin = 0")
-            alumni = cur.fetchall()
+            alumni = db.execute("SELECT id FROM users WHERE status='approved' AND is_admin=0").fetchall()
             for a in alumni:
                 notify(a["id"], "announcement", f"New announcement: {title}", url_for("index"))
             flash("Announcement published and alumni notified.", "success")
         return redirect(url_for("admin_announcements"))
-    cur.execute(
-        "SELECT a.*, u.full_name AS author FROM announcements a LEFT JOIN users u ON u.id = a.created_by "
+    items = db.execute(
+        "SELECT a.*, u.full_name AS author FROM announcements a LEFT JOIN users u ON u.id=a.created_by "
         "ORDER BY a.created_at DESC"
-    )
-    items = cur.fetchall()
+    ).fetchall()
     return render_template("admin/announcements.html", items=items)
 
 
@@ -1348,8 +1277,7 @@ def admin_announcements():
 @admin_required
 def admin_announcement_delete(aid):
     db = get_db()
-    cur = db.cursor()
-    cur.execute("DELETE FROM announcements WHERE id = %s", (aid,))
+    db.execute("DELETE FROM announcements WHERE id=%s", (aid,))
     db.commit()
     flash("Announcement deleted.", "info")
     return redirect(url_for("admin_announcements"))
@@ -1361,13 +1289,11 @@ def api_verify():
     sn = request.args.get("student_number", "").strip()
     year = request.args.get("year", "").strip()
     db = get_db()
-    cur = db.cursor()
-    cur.execute(
-        """SELECT 1 FROM graduate_master WHERE student_number = %s AND lower(full_name) = lower(%s)
-           AND year_graduated = %s""",
+    match = db.execute(
+        """SELECT 1 FROM graduate_master WHERE student_number=%s AND lower(full_name)=lower(%s)
+           AND year_graduated=%s""",
         (sn, name, int(year) if year.isdigit() else -1),
-    )
-    match = cur.fetchone()
+    ).fetchone()
     return jsonify({"verified": bool(match)})
 
 
@@ -1381,6 +1307,7 @@ def not_found(e):
     return render_template("error.html", code=404, message="Page not found."), 404
 
 
+# Initialize database on import (idempotent — creates tables + seeds)
 init_db()
 
 if __name__ == "__main__":
