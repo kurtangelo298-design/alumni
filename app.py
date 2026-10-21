@@ -595,7 +595,7 @@ def feed():
 
     # Kunin ang mga posts
     cur.execute("""
-        SELECT p.*, u.full_name, u.department, u.year_graduated
+        SELECT p.*, u.full_name, u.department, u.year_graduated, u.profile_pic
         FROM posts p 
         JOIN users u ON u.id = p.user_id
         ORDER BY p.created_at DESC LIMIT 100
