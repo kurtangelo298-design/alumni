@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Register · SLSU-JGE Alumni{% endblock %}
+{% block content %}
+<div class="max-w-2xl mx-auto">
+  <div class="bg-white rounded-2xl border border-slate-200 shadow-lg p-8">
+    <h1 class="text-2xl font-bold text-slsu-800 text-center">Alumni Registration</h1>
+    <p class="text-sm text-slate-500 text-center mt-1">Your details are automatically verified against the university's master graduate list.</p>
+
+    <form method="post" class="mt-6 grid md:grid-cols-2 gap-4">
+      <div>
+        <label class="text-sm font-semibold text-slate-700">Full Name *</label>
+        <input name="full_name" id="full_name" value="{{ form.full_name or '' }}" required class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-slsu-600 outline-none">
+      </div>
+      <div>
+        <label class="text-sm font-semibold text-slate-700">Student Number *</label>
+        <input name="student_number" id="student_number" value="{{ form.student_number or '' }}" required placeholder="e.g. 2018-0001" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-slsu-600 outline-none">
+      </div>
+      <div>
+        <label class="text-sm font-semibold text-slate-700">Department / College</label>
+        <select name="department" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-slsu-600 outline-none">
+          <option value="">Select department</option>
+          {% for d in depts %}<option value="{{ d }}" {% if form.department == d %}selected{% endif %}>{{ d }}</option>{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="text-sm font-semibold text-slate-700">Year Graduated *</label>
+        <input name="year_graduated" id="year_graduated" type="number" value="{{ form.year_graduated or '' }}" required class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-slsu-600 outline-none">
+      </div>
+      <div>
+        <label class="text-sm font-semibold text-slate-700">Email *</label>
+        <input name="email" type="email" value="{{ form.email or '' }}" required class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-slsu-600 outline-none">
+      </div>
+      <div>
+        <label class="text-sm font-semibold text-slate-700">Contact Number</label>
+        <input name="contact" value="{{ form.contact or '' }}" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-slsu-600 outline-none">
+      </div>
+      <div>
+        <label class="text-sm font-semibold text-slate-700">Password * (min 6 chars)</label>
+        <input name="password" type="password" required class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-slsu-600 outline-none">
+      </div>
+      <div>
+        <label class="text-sm font-semibold text-slate-700">Confirm Password *</label>
+        <input name="confirm" type="password" required class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-slsu-600 outline-none">
+      </div>
+      <div class="md:col-span-2">
+        <div id="verify-status" class="hidden text-sm rounded-lg px-4 py-3"></div>
+      </div>
+      <div class="md:col-span-2">
+        <button class="w-full py-2.5 bg-slsu-700 text-white rounded-lg font-semibold hover:bg-slsu-800">Submit Registration</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+// Live verification check against the master graduate list
+const fields = ['full_name','student_number','year_graduated'];
+fields.forEach(id => document.getElementById(id).addEventListener('input', check));
+async function check(){
+  const name = document.getElementById('full_name').value.trim();
+  const sn = document.getElementById('student_number').value.trim();
+  const yr = document.getElementById('year_graduated').value.trim();
+  const box = document.getElementById('verify-status');
+  if(!name || !sn || !yr){ box.classList.add('hidden'); return; }
+  const r = await fetch(`/api/verify?name=${encodeURIComponent(name)}&student_number=${encodeURIComponent(sn)}&year=${encodeURIComponent(yr)}`);
+  const data = await r.json();
+  box.classList.remove('hidden','bg-green-50','text-green-800','border','border-green-300','bg-green-50','text-green-800','border-green-300');
+  if(data.verified){
+    box.className = 'text-sm rounded-lg px-4 py-3 bg-green-50 text-green-800 border border-green-300';
+    box.textContent = '✓ Record found in the master graduate list. You will be auto-verified on submit.';
+  } else {
+    box.className = 'text-sm rounded-lg px-4 py-3 bg-green-50 text-green-800 border border-green-300';
+    box.textContent = '⚠ No exact match found yet. Your registration will be saved and manually reviewed by an administrator.';
+  }
+}
+</script>
+{% endblock %}

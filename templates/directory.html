@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Graduate Directory · SLSU-JGE{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between flex-wrap gap-2 mb-4">
+  <h1 class="text-2xl font-bold text-slsu-800">Public Graduate Directory</h1>
+  <span class="text-sm text-slate-500">{{ graduates|length }} record(s) · No login required</span>
+</div>
+
+<form method="get" class="bg-white rounded-xl border border-slate-200 p-4 shadow-sm mb-5">
+  <div class="grid md:grid-cols-4 gap-3">
+    <div>
+      <label class="text-xs font-semibold text-slate-600">Search by Name / Student No.</label>
+      <input name="q" value="{{ q }}" placeholder="e.g. Juan Dela Cruz" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-slsu-600 outline-none">
+    </div>
+    <div>
+      <label class="text-xs font-semibold text-slate-600">Department / College</label>
+      <select name="department" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-slsu-600 outline-none">
+        <option value="">All Departments</option>
+        {% for d in depts %}<option value="{{ d }}" {% if dept == d %}selected{% endif %}>{{ d }}</option>{% endfor %}
+      </select>
+    </div>
+    <div>
+      <label class="text-xs font-semibold text-slate-600">Year From</label>
+      <input name="year_from" value="{{ year_from }}" type="number" placeholder="2018" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-slsu-600 outline-none">
+    </div>
+    <div>
+      <label class="text-xs font-semibold text-slate-600">Year To</label>
+      <input name="year_to" value="{{ year_to }}" type="number" placeholder="2024" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-slsu-600 outline-none">
+    </div>
+  </div>
+  <div class="mt-3 flex gap-2">
+    <button class="px-4 py-2 bg-slsu-700 text-white rounded-lg text-sm font-semibold hover:bg-slsu-800">Apply Filters</button>
+    <a href="{{ url_for('directory') }}" class="px-4 py-2 border border-slate-300 rounded-lg text-sm hover:bg-slate-50">Reset</a>
+  </div>
+</form>
+
+<div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+  <table class="w-full text-sm">
+    <thead class="bg-slsu-50 text-slsu-800">
+      <tr>
+        <th class="text-left px-4 py-3 font-semibold">Full Name</th>
+        <th class="text-left px-4 py-3 font-semibold">Student Number</th>
+        <th class="text-left px-4 py-3 font-semibold hidden md:table-cell">Department / College</th>
+        <th class="text-left px-4 py-3 font-semibold">Year Graduated</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for g in graduates %}
+      <tr class="hover:bg-slate-50">
+        <td class="px-4 py-3 font-medium text-slate-800">{{ g.full_name }}</td>
+        <td class="px-4 py-3 text-slate-600 font-mono text-xs">{{ g.student_number }}</td>
+        <td class="px-4 py-3 text-slate-600 hidden md:table-cell">{{ g.department or '—' }}</td>
+        <td class="px-4 py-3 text-slate-600">{{ g.year_graduated or '—' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="px-4 py-8 text-center text-slate-400">No graduates match your filters.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

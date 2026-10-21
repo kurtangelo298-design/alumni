@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Notifications · SLSU-JGE Alumni{% endblock %}
+{% block content %}
+<h1 class="text-2xl font-bold text-slsu-800 mb-4">Notifications</h1>
+<div class="bg-white rounded-xl border border-slate-200 shadow-sm divide-y divide-slate-100">
+  {% for n in items %}
+  <div class="px-5 py-4 flex items-start gap-3 {% if not n.is_read %}bg-blue-50/50{% endif %}">
+    <span class="w-2 h-2 mt-2 rounded-full {% if n.type == 'approval' %}bg-green-500{% elif n.type == 'message' %}bg-blue-500{% elif n.type == 'announcement' %}bg-green-500{% else %}bg-slate-400{% endif %}"></span>
+    <div class="flex-1">
+      <p class="text-sm text-slate-800">{{ n.content }}</p>
+      <p class="text-xs text-slate-400 mt-0.5">{{ n.created_at }} · {{ n.type|capitalize }}</p>
+      {% if n.link %}<a href="{{ n.link }}" class="text-xs text-slsu-700 font-semibold hover:underline">View →</a>{% endif %}
+    </div>
+  </div>
+  {% else %}
+  <div class="p-10 text-center text-slate-400">No notifications.</div>
+  {% endfor %}
+</div>
+{% endblock %}
