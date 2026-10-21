@@ -907,6 +907,7 @@ def messages(other_id):
         is_creator=False
     )
 
+@app.route("/group/new", methods=["GET", "POST"], endpoint="new_group")
 @app.route("/messages/group/new", methods=["GET", "POST"])
 @login_required
 def group_new():
