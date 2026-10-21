@@ -26,7 +26,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 # ---------------------------------------------------------------------------
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://username:password@hostname:5432/dbname?sslmode=require"
+    "postgresql://neondb_owner:npg_X5ayN0AfBQTt@ep-wild-voice-b36qebp6-pooler.c-4.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 )
 
 app = Flask(__name__)
