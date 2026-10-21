@@ -4,10 +4,9 @@ import io
 import base64
 from datetime import datetime
 from functools import wraps
-from flask import Flask, g, render_template, request, redirect, url_for, session, flash, abort, jsonify
+from flask import Flask, g, render_template, request, redirect, url_for, session, flash, abort
 from werkzeug.security import generate_password_hash, check_password_hash
 import psycopg2
-from psycopg2.extras import RealDictRow
 
 # ── Configuration ───────────────────────────────────────────────────────────
 # Neon connection string — ilagay ang iyong DATABASE_URL dito
