@@ -1,29 +1,54 @@
 {% extends "base.html" %}
 {% block title %}News Feed · SLSU-JGE Alumni{% endblock %}
 {% block content %}
+<style>
+/* NEW: Facebook-style reaction picker */
+.reaction-wrap { position: relative; display: inline-block; }
+.reaction-picker {
+  display: none; position: absolute; bottom: 100%; left: 0; margin-bottom: 6px;
+  background: white; border: 1px solid #e2e8f0; border-radius: 9999px;
+  padding: 6px 10px; box-shadow: 0 8px 24px rgba(0,0,0,.18); gap: 4px; z-index: 30;
+}
+.reaction-picker.show { display: flex !important; }
+.reaction-wrap:hover .reaction-picker { display: flex; }
+.reaction-picker button {
+  font-size: 1.5rem; line-height: 1; padding: 4px 6px; border-radius: 9999px;
+  transition: transform .15s;
+}
+.reaction-picker button:hover { transform: scale(1.4) translateY(-4px); }
+</style>
+
 <div class="grid lg:grid-cols-3 gap-6">
   <div class="lg:col-span-2 space-y-4">
     <h1 class="text-2xl font-bold text-slsu-700">Alumni News Feed</h1>
 
-    <!-- [NEW] Post composer: optional caption + photo/video upload -->
+    <!-- UPDATED: post composer — caption OPTIONAL, attach photo OR video (max 50MB) -->
     <form method="post" enctype="multipart/form-data" class="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
-      <textarea name="content" rows="2" placeholder="Write a caption (optional)..." class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-slsu-600 outline-none resize-none"></textarea>
+      <textarea name="content" rows="3" placeholder="Share something with your fellow alumni... (caption optional)"
+        class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-slsu-600 outline-none resize-none"></textarea>
       <div class="mt-2 flex items-center justify-between flex-wrap gap-2">
-        <label class="cursor-pointer inline-flex items-center gap-2 text-sm text-slsu-700 font-semibold border border-slate-300 rounded-lg px-3 py-2 hover:bg-slate-50">
-          📎 Attach Photo / Video
-          <input type="file" name="media" accept="image/*,video/mp4,video/webm" class="hidden" onchange="document.getElementById('filename').textContent = this.files[0] ? this.files[0].name : ''">
+        <label class="flex items-center gap-2 text-sm text-slate-600 cursor-pointer hover:text-slsu-700">
+          <span class="inline-flex items-center gap-1 px-3 py-1.5 border border-slate-300 rounded-lg">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+            Photo / Video
+          </span>
+          <input type="file" name="media" accept="image/*,video/mp4" class="hidden" onchange="this.nextElementSibling.textContent = this.files[0] ? this.files[0].name : ''">
+          <span id="filename" class="text-xs text-slate-400 truncate max-w-[180px]"></span>
         </label>
-        <span id="filename" class="text-xs text-slate-500 truncate max-w-[180px]"></span>
         <button class="px-4 py-2 bg-slsu-700 text-white rounded-lg text-sm font-semibold hover:bg-slsu-600">Post</button>
       </div>
-      <p class="text-[11px] text-slate-400 mt-1">JPG/PNG/GIF/WEBP photo or MP4/WEBM video, max 50 MB.</p>
+      <p class="mt-1 text-[11px] text-slate-400">Allowed: JPG/PNG photo or MP4 video (max 50MB).</p>
     </form>
 
-    {% for post, comments, replies, media, reactions, my_reaction in post_data %}
+    {% for post, comments, replies, media, counts, mine in post_data %}
     <div class="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
       <div class="flex items-start justify-between">
         <div class="flex items-center gap-3">
-          <div class="w-10 h-10 rounded-full bg-slsu-700 text-white flex items-center justify-center font-bold text-sm">{{ post.full_name|initials }}</div>
+          {% if post.profile_pic %}
+            <img src="{{ post.profile_pic }}" class="w-10 h-10 rounded-full object-cover" alt="">
+          {% else %}
+            <div class="w-10 h-10 rounded-full bg-slsu-700 text-white flex items-center justify-center font-bold text-sm">{{ post.full_name|initials }}</div>
+          {% endif %}
           <div>
             <p class="font-semibold text-slate-800">{{ post.full_name }}</p>
             <p class="text-xs text-slate-500">{{ post.department or '' }} · Batch {{ post.year_graduated or '—' }} · {{ post.created_at }}</p>
@@ -36,51 +61,55 @@
         {% endif %}
       </div>
 
-      {% if post.content %}<p class="mt-3 text-slate-700 whitespace-pre-wrap">{{ post.content }}</p>{% endif %}
+      {% if post.content %}
+      <p class="mt-3 text-slate-700 whitespace-pre-wrap">{{ post.content }}</p>
+      {% endif %}
 
-      <!-- [NEW] Media display -->
+      <!-- NEW: media display — photo as <img>, video as HTML5 player -->
       {% if media %}
-        {% set mtype, mdata = media %}
-        {% if mtype == 'image' %}
-          <img src="{{ mdata }}" alt="attached photo" class="mt-3 rounded-lg max-h-96 w-auto object-cover border border-slate-200">
-        {% else %}
-          <video controls class="mt-3 rounded-lg max-h-96 w-full bg-black border border-slate-200">
-            <source src="{{ mdata }}">Your browser does not support video playback.
+        {% if media.media_type == 'photo' %}
+          <img src="{{ media.media_data }}" class="mt-3 rounded-lg max-h-96 w-auto object-contain border border-slate-200" alt="attached photo">
+        {% elif media.media_type == 'video' %}
+          <video controls preload="metadata" class="mt-3 rounded-lg max-h-96 w-full bg-black border border-slate-200">
+            <source src="{{ media.media_data }}" type="video/mp4">
+            Your browser does not support video playback.
           </video>
         {% endif %}
       {% endif %}
 
-      <!-- [NEW] Reaction summary: e.g. ❤️ 5 😮 2 😂 3 -->
-      {% if reactions %}
-      <div class="mt-3 text-xs text-slate-500 flex flex-wrap items-center gap-2">
-        {% for code, cnt in reactions.items() %}
-          <span class="inline-flex items-center gap-1 bg-slate-100 rounded-full px-2 py-0.5">{{ REACTIONS[code] }} {{ cnt }}</span>
-        {% endfor %}
+      <!-- NEW: reaction summary (counts per type) -->
+      {% set total_reactions = counts.values()|sum %}
+      {% if total_reactions > 0 %}
+      <div class="mt-3 flex items-center gap-1 text-xs text-slate-500" id="summary-{{ post.id }}">
+        {% for r in REACTION_TYPES %}{% if counts[r] > 0 %}
+          <span class="inline-flex items-center gap-0.5" title="{{ REACTION_LABEL[r] }}">{{ REACTION_EMOJI[r] }} {{ counts[r] }}</span>
+        {% endif %}{% endfor %}
+        <span class="ml-1">reaction{{ '' if total_reactions == 1 else 's' }}</span>
       </div>
+      {% else %}
+      <div class="mt-3 text-xs text-slate-400 hidden" id="summary-{{ post.id }}"></div>
       {% endif %}
 
-      <div class="mt-3 flex items-center gap-4 text-sm border-t border-slate-100 pt-3">
-        <!-- [NEW] Facebook-style reaction button + hover/long-press picker -->
-        <div class="reaction-wrap relative">
-          <form method="post" action="{{ url_for('react', post_id=post.id) }}" class="inline">
-            <input type="hidden" name="reaction_type" value="{{ my_reaction or 'like' }}">
-            <button class="react-btn flex items-center gap-1 px-2 py-1 rounded {% if my_reaction %}text-slsu-700 font-semibold{% else %}text-slate-500 hover:text-slsu-700{% endif %}">
-              <span class="text-base">{{ REACTIONS[my_reaction] if my_reaction else '👍' }}</span>
-              <span>{{ my_reaction|capitalize if my_reaction else 'Like' }}</span>
-            </button>
-          </form>
-          <div class="reaction-picker hidden absolute bottom-full left-0 mb-1 bg-white border border-slate-200 rounded-full shadow-lg px-2 py-1 flex gap-1 z-20">
-            {% for code, emoji in REACTIONS.items() %}
-            <form method="post" action="{{ url_for('react', post_id=post.id) }}" class="inline">
-              <input type="hidden" name="reaction_type" value="{{ code }}">
-              <button title="{{ code|capitalize }}" class="text-2xl hover:scale-125 transition-transform px-0.5">{{ emoji }}</button>
-            </form>
+      <!-- NEW: Facebook-style reaction button + picker -->
+      <div class="mt-2 flex items-center gap-4 text-sm border-t border-slate-100 pt-3">
+        <div class="reaction-wrap" id="rw-{{ post.id }}">
+          <button type="button" class="reaction-btn flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50
+              {% if mine %}text-slsu-700 font-semibold{% else %}text-slate-500{% endif %}"
+              data-post="{{ post.id }}" onclick="toggleReaction({{ post.id }})"
+              ontouchstart="startLongPress(event, {{ post.id }})" ontouchend="cancelLongPress(event)" ontouchmove="cancelLongPress(event)">
+            <span class="reaction-emoji text-base">{% if mine %}{{ REACTION_EMOJI[mine] }}{% else %}👍{% endif %}</span>
+            <span class="reaction-label">{% if mine %}{{ REACTION_LABEL[mine] }}{% else %}Like{% endif %}</span>
+          </button>
+          <div class="reaction-picker" id="picker-{{ post.id }}">
+            {% for r in REACTION_TYPES %}
+            <button type="button" title="{{ REACTION_LABEL[r] }}" onclick="react({{ post.id }}, '{{ r }}')">{{ REACTION_EMOJI[r] }}</button>
             {% endfor %}
           </div>
         </div>
         <span class="text-slate-400">{{ comments|length }} comment(s)</span>
       </div>
 
+      <!-- Comments (unchanged) -->
       <div class="mt-3 space-y-3">
         {% for c in comments %}
         <div class="bg-slate-50 rounded-lg p-3">
@@ -133,19 +162,68 @@
 </div>
 
 <script>
-// [NEW] Reaction picker: hover on desktop, tap-and-hold on mobile
-document.querySelectorAll('.reaction-wrap').forEach(wrap => {
-  const picker = wrap.querySelector('.reaction-picker');
-  let pressTimer = null;
-  const show = () => picker.classList.remove('hidden');
-  const hide = () => picker.classList.add('hidden');
-  wrap.addEventListener('mouseenter', show);
-  wrap.addEventListener('mouseleave', hide);
-  const btn = wrap.querySelector('.react-btn');
-  if (btn) {
-    btn.addEventListener('touchstart', e => { pressTimer = setTimeout(show, 500); }, {passive:true});
-    btn.addEventListener('touchend', e => { clearTimeout(pressTimer); setTimeout(hide, 2500); });
-    btn.addEventListener('touchmove', () => clearTimeout(pressTimer));
+/* NEW: Facebook-style reactions — AJAX to /post/<id>/react */
+const REACTION_EMOJI = {{ REACTION_EMOJI|tojson }};
+const REACTION_LABEL = {{ REACTION_LABEL|tojson }};
+let _lpTimer = null, _lpFired = false;
+
+function startLongPress(e, postId){
+  _lpFired = false;
+  _lpTimer = setTimeout(() => {
+    _lpFired = true;
+    document.getElementById('picker-' + postId).classList.add('show');
+  }, 500);
+}
+function cancelLongPress(e){ if(_lpTimer){ clearTimeout(_lpTimer); _lpTimer = null; } }
+
+/* tap main button: if no reaction -> Like; if has reaction -> remove */
+function toggleReaction(postId){
+  if(_lpFired){ _lpFired = false; return; }
+  const btn = document.querySelector(`#rw-${postId} .reaction-btn`);
+  const has = btn.querySelector('.reaction-label').textContent !== 'Like';
+  react(postId, has ? null : 'like');
+}
+
+function react(postId, type){
+  fetch(`/post/${postId}/react`, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ reaction_type: type })
+  }).then(r => r.json()).then(data => {
+    const btn = document.querySelector(`#rw-${postId} .reaction-btn`);
+    const emoji = btn.querySelector('.reaction-emoji');
+    const label = btn.querySelector('.reaction-label');
+    if(data.my_reaction){
+      emoji.textContent = REACTION_EMOJI[data.my_reaction];
+      label.textContent = REACTION_LABEL[data.my_reaction];
+      btn.classList.add('text-slsu-700','font-semibold');
+      btn.classList.remove('text-slate-500');
+    } else {
+      emoji.textContent = '👍';
+      label.textContent = 'Like';
+      btn.classList.remove('text-slsu-700','font-semibold');
+      btn.classList.add('text-slate-500');
+    }
+    // update summary line
+    const sum = document.getElementById('summary-' + postId);
+    let total = 0, html = '';
+    for(const [r,c] of Object.entries(data.counts)){
+      if(c > 0){ html += `<span class="inline-flex items-center gap-0.5" title="${REACTION_LABEL[r]}">${REACTION_EMOJI[r]} ${c}</span>`; total += c; }
+    }
+    if(total > 0){
+      sum.classList.remove('hidden');
+      sum.className = 'mt-3 flex items-center gap-1 text-xs text-slate-500';
+      sum.innerHTML = html + `<span class="ml-1">reaction${total===1?'':'s'}</span>`;
+    } else {
+      sum.classList.add('hidden');
+    }
+    document.getElementById('picker-' + postId).classList.remove('show');
+  });
+}
+// close pickers when clicking elsewhere
+document.addEventListener('click', e => {
+  if(!e.target.closest('.reaction-wrap')){
+    document.querySelectorAll('.reaction-picker.show').forEach(p => p.classList.remove('show'));
   }
 });
 </script>
